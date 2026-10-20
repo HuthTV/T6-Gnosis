@@ -1,0 +1,85 @@
+# Builds T6 Gnosis on every push and pull request (clean build plus unit tests). A tag
+# "vYYYY.MM.DD" makes a release build with that version and publishes a GitHub Release
+# whose notes link to this run; the files carry a build provenance attestation, so
+# anyone can check that a download came from this repository and run
+# (gh attestation verify <file> --repo <owner>/T6-Gnosis).
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # The GSC helper is compiled with gsc-tool, pinned to the version used to develop it.
+      - name: Get gsc-tool 1.4.10
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/xensik/gsc-tool/releases/download/1.4.10/windows-x64-release.zip -OutFile gsc-tool.zip
+          Expand-Archive gsc-tool.zip -DestinationPath gsc-tool
+          $exe = Get-ChildItem gsc-tool -Recurse -Filter gsc-tool.exe | Select-Object -First 1
+          if (-not $exe) { throw 'gsc-tool.exe not found in the download.' }
+          New-Item -ItemType Directory tools -Force | Out-Null
+          Copy-Item $exe.FullName tools\gsc-tool.exe
+
+      - name: Build (development)
+        if: github.ref_type != 'tag'
+        shell: cmd
+        run: build.bat
+
+      - name: Upload development build
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: T6Gnosis-dev-${{ github.sha }}
+          path: build/T6Gnosis.dll
+
+      - name: Build (release)
+        if: github.ref_type == 'tag'
+        shell: cmd
+        env:
+          TAG: ${{ github.ref_name }}
+        run: build.bat release %TAG:~1%
+
+      - name: Checksums
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          Get-ChildItem dist -File | ForEach-Object { "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name } |
+            Set-Content dist\SHA256SUMS.txt -Encoding ascii
+
+      - name: Attest build provenance
+        if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/T6Gnosis*'
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          $version = $env:TAG.Substring(1)
+          $sums = Get-Content dist\SHA256SUMS.txt -Raw
+          $notes = "Built by [workflow run $env:GITHUB_RUN_ID]($env:RUN_URL) from commit $env:COMMIT.`n`n" +
+            "Install: extract ``T6Gnosis.dll`` into ``%LOCALAPPDATA%\Plutonium\plugins``.`n`n" +
+            "SHA256:`n``````n$sums``````"
+          gh release create $env:TAG "dist/T6Gnosis-$version.zip" dist/T6Gnosis.dll dist/SHA256SUMS.txt --title "T6 Gnosis $version" --notes $notes
