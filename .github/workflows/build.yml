@@ -78,8 +78,9 @@ jobs:
           COMMIT: ${{ github.sha }}
         run: |
           $version = $env:TAG.Substring(1)
-          $sums = Get-Content dist\SHA256SUMS.txt -Raw
+          $sums = (Get-Content dist\SHA256SUMS.txt -Raw).Trim()
+          $fence = '```'
           $notes = "Built by [workflow run $env:GITHUB_RUN_ID]($env:RUN_URL) from commit $env:COMMIT.`n`n" +
             "Install: extract ``T6Gnosis.dll`` into ``%LOCALAPPDATA%\Plutonium\plugins``.`n`n" +
-            "SHA256:`n``````n$sums``````"
+            "SHA256:`n$fence`n$sums`n$fence"
           gh release create $env:TAG "dist/T6Gnosis-$version.zip" dist/T6Gnosis.dll dist/SHA256SUMS.txt --title "T6 Gnosis $version" --notes $notes
