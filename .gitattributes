@@ -1,7 +1,2 @@
 * text=auto
 *.bat text eol=crlf
-*.cpp text eol=lf
-*.gsc text eol=lf
-*.md text eol=lf
-.gitmodules text eol=lf
-.gitignore text eol=lf

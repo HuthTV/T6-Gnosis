@@ -1,4 +1,3 @@
 /build/
 /dist/
-/compiled/
-*.user
+/tools/gsc-tool.exe
