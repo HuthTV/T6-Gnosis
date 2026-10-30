@@ -29,12 +29,13 @@ To uninstall, delete `T6Gnosis.dll`, `T6Gnosis.cfg` and the helper script.
 | Overlay | Master switch for everything T6 Gnosis draws. |
 | Movement HUD | Sprint stamina bar, speedometer and jump stats (input timing, jump speed). |
 | Zombies | Wallhack arrows (diamonds for special enemies). Despawn tracker: zombie counts, the time to the next cleanup check, despawned and prevented zombies, arrows coloured by cleanup status. Only on maps with despawn cleanup (TranZit, Die Rise, Mob of the Dead, Buried, Origins). |
-| Spawns | Zombie and special spawn points, which are active, labels. |
-| Player collision | World collision surfaces (floors, walls, roofs, invisible clips), the player bounding box, zombie collision boxes. |
+| Spawns | Zombie and special spawn points (the Avogadro's included), which are active, labels. |
+| Player collision | World collision surfaces (floors, walls, roofs, invisible clips) with models (zombies, props, the weapon) shown over them; the player bounding box, zombie collision boxes. |
 | Triggers | Trigger volumes and the playable area. |
 | NAV | The zombie navigation graph: nodes, links, traversals. |
 | Origins | Wind and fire puzzle 2 aids: hitboxes and where the held staff's shot lands. |
 | Mob of the Dead | Blue skull aid: each skull's tomahawk catch zone and the predicted tomahawk check point. Afterlife shock boxes and their activation range. |
+| TranZit | Avogadro aid: his state, hits, shield and next move above his head; the phase dashes he can pick, the bolt wedge and his planned route; where he can land from the storm. |
 
 World overlays are drawn under the game's HUD; your weapon and zombies cover them.
 Every top-level option can be bound to a key under **Quick controls** in the menu.

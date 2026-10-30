@@ -28,20 +28,26 @@ ID3D11Texture2D* scene_source=nullptr;ID3D11Texture2D* scene_copy=nullptr;ID3D11
 // using the overlay's projection (ndc x = -left/(z tan_x), ndc y = up/(z tan_y)).
 constexpr char source[]=
     "cbuffer C:register(b0){float4 origin;float4 forward;float4 left;float4 up;"
-    " float4 lens;float4 port;float4 test;float4 scale;float4 boxes[64];};"
-    "Texture2D<float> scene:register(t0);"
+    " float4 lens;float4 port;float4 test;float4 scale;float4 extra;float4 tint;float4 boxes[512];};"
+    "Texture2D<float> scene:register(t0);Texture2D<float> model_mask:register(t1);"
     "struct VI{float4 pos:POSITION;float4 col:COLOR0;};"
     "struct PI{float4 pos:SV_POSITION;float4 col:COLOR0;float view:TEXCOORD0;};"
     "PI vs(VI i){PI o;o.pos=i.pos;o.col=i.col;o.view=i.pos.w;return o;}"
     "float4 ps(PI i):SV_Target{"
+    " if(test.z>0.5&&extra.w>0.5){int2 q=int2(i.pos.xy*scale.xy);float e=scene.Load(int3(q,0));"
+    "  float s=e>1e-7?lens.z/e:1e30;if(s<lens.w)discard;"
+    "  if(model_mask.Load(int3(q,0))>0.5){if(s>i.view+max(test.x,test.y*i.view))return float4(i.col.rgb,i.col.a*tint.x);discard;}"
+    "  return i.col;}"
     " if(test.z>0.5){float d=scene.Load(int3(int2(i.pos.xy*scale.xy),0));"
-    "  if(d>1e-7){float z=lens.z/d;"
-    "   if(z<i.view-max(test.x,test.y*i.view)){"
-    "    bool hide=z<lens.w;"
-    "    if(!hide){float nx=(i.pos.x-port.x)/port.z*2-1;float ny=1-(i.pos.y-port.y)/port.w*2;"
-    "     float3 p=origin.xyz+forward.xyz*z-left.xyz*(nx*z*lens.x)+up.xyz*(ny*z*lens.y);"
-    "     int n=(int)test.w;"
-    "     for(int b=0;b<32;++b){if(b>=n)break;if(all(p>=boxes[b*2].xyz)&&all(p<=boxes[b*2+1].xyz)){hide=true;break;}}}"
+    "  if(d>1e-7){float z=lens.z/d;float gap=i.view-z;float far_gap=max(test.x,test.y*i.view);float model_gap=max(extra.y,extra.z*i.view);"
+    "   if(gap>min(far_gap,model_gap)){"
+    "    bool hide=false;int n=(int)test.w;int zc=(int)extra.x;"
+    "    float nx=(i.pos.x-port.x)/port.z*2-1;float ny=1-(i.pos.y-port.y)/port.w*2;"
+    "    float3 p=origin.xyz+forward.xyz*z-left.xyz*(nx*z*lens.x)+up.xyz*(ny*z*lens.y);"
+    "    if(gap>far_gap){hide=z<lens.w;"
+    "     for(int b=0;b<256;++b){if(hide||b>=zc)break;if(all(p>=boxes[b*2].xyz)&&all(p<=boxes[b*2+1].xyz))hide=true;}}"
+    "    if(!hide&&gap>model_gap)"
+    "     for(int c=0;c<256;++c){if(c>=n)break;if(c>=zc&&all(p>=boxes[c*2].xyz)&&all(p<=boxes[c*2+1].xyz)){hide=true;break;}}"
     "    if(hide)discard;}}}"
     " return i.col;}";
 // ImGui draw lists (world overlays) in the same pass (user request 2026-10-14: under
@@ -50,7 +56,7 @@ constexpr char source[]=
 // dropped where the scene pixel is the viewmodel or lies inside a zombie box.
 constexpr char list_source[]=
     "cbuffer C:register(b0){float4 origin;float4 forward;float4 left;float4 up;"
-    " float4 lens;float4 port;float4 test;float4 scale;float4 boxes[64];};"
+    " float4 lens;float4 port;float4 test;float4 scale;float4 extra;float4 tint;float4 boxes[512];};"
     "Texture2D<float> scene:register(t0);Texture2D font:register(t1);SamplerState linear_sampler:register(s0);"
     "struct VI{float2 pos:POSITION;float2 uv:TEXCOORD0;float4 col:COLOR0;};"
     "struct PI{float4 pos:SV_POSITION;float2 uv:TEXCOORD0;float4 col:COLOR0;};"
@@ -61,7 +67,7 @@ constexpr char list_source[]=
     "   if(!hide){float nx=(i.pos.x-port.x)/port.z*2-1;float ny=1-(i.pos.y-port.y)/port.w*2;"
     "    float3 p=origin.xyz+forward.xyz*z-left.xyz*(nx*z*lens.x)+up.xyz*(ny*z*lens.y);"
     "    int n=(int)test.w;"
-    "    for(int b=0;b<32;++b){if(b>=n)break;if(all(p>=boxes[b*2].xyz)&&all(p<=boxes[b*2+1].xyz)){hide=true;break;}}}"
+    "    for(int b=0;b<256;++b){if(b>=n)break;if(all(p>=boxes[b*2].xyz)&&all(p<=boxes[b*2+1].xyz)){hide=true;break;}}}"
     "   if(hide)discard;}}"
     " return i.col*font.Sample(linear_sampler,i.uv);}";
 ID3D11VertexShader* list_vertex_shader=nullptr;ID3D11PixelShader* list_pixel_shader=nullptr;ID3D11InputLayout* list_layout=nullptr;
@@ -73,10 +79,18 @@ struct Constants {
     float port[4]{0,0,1,1};     // viewport x, y, width, height in target pixels
     float test[4]{8,0.03f,0,0}; // tolerance, relative, enabled, box count
     float scale[4]{1,1,0,0};    // scene texels per target pixel
-    float boxes[64][4]{};       // lo, hi pairs
+    float extra[4]{0,1,0.004f,0};  // zombie box count, model tolerance, model relative, mode
+    float tint[4]{0.35f,0,0,0};    // collision strength over a model behind it (mode 1)
+    float boxes[512][4]{};      // lo, hi pairs
 };
-static_assert(sizeof(Constants)==72*16);
+static_assert(sizeof(Constants)==522*16);
 
+// Model mask: 1 where a model is the visible surface. frame_trace replays each opaque model
+// draw into it with the game's own vertex shader and depth (GREATER_EQUAL on the reversed
+// depth, no write), so only the pixels where that model is visible are marked.
+ID3D11Texture2D* mask_texture=nullptr;ID3D11RenderTargetView* mask_target=nullptr;ID3D11ShaderResourceView* mask_view=nullptr;
+unsigned mask_width=0,mask_height=0;ID3D11PixelShader* mask_shader=nullptr;ID3D11DepthStencilState* mask_depth=nullptr;
+constexpr char mask_source[]="float4 ps():SV_Target{return float4(1,1,1,1);}";
 bool create(ID3D11Device* device) {
     ID3DBlob* vs=nullptr;ID3DBlob* ps=nullptr;
     bool ok=SUCCEEDED(D3DCompile(source,sizeof(source)-1,nullptr,nullptr,nullptr,"vs","vs_4_0",0,0,&vs,nullptr))&&
@@ -129,6 +143,14 @@ bool create(ID3D11Device* device) {
             ok=SUCCEEDED(device->CreateInputLayout(elements,3,list_vs->GetBufferPointer(),list_vs->GetBufferSize(),&list_layout));
         }
         drop(list_vs);drop(list_ps);
+    }
+    if(ok) {
+        ID3DBlob* blob=nullptr;
+        ok=SUCCEEDED(D3DCompile(mask_source,sizeof(mask_source)-1,nullptr,nullptr,nullptr,"ps","ps_4_0",0,0,&blob,nullptr))&&
+            SUCCEEDED(device->CreatePixelShader(blob->GetBufferPointer(),blob->GetBufferSize(),nullptr,&mask_shader));
+        drop(blob);
+        D3D11_DEPTH_STENCIL_DESC d{};d.DepthEnable=TRUE;d.DepthWriteMask=D3D11_DEPTH_WRITE_MASK_ZERO;d.DepthFunc=D3D11_COMPARISON_GREATER_EQUAL;
+        ok=ok&&SUCCEEDED(device->CreateDepthStencilState(&d,&mask_depth));
     }
     if(ok) {
         D3D11_SAMPLER_DESC s{};s.Filter=D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -196,7 +218,7 @@ struct State {
     UINT vs_count=256,ps_count=256,gs_count=256;
     ID3D11ShaderResourceView* ps_resource=nullptr;ID3D11Buffer* ps_constants=nullptr;
     ID3D11Buffer* index_buffer=nullptr;DXGI_FORMAT index_format{};UINT index_offset=0;
-    ID3D11SamplerState* ps_sampler=nullptr;ID3D11ShaderResourceView* ps_resource1=nullptr;ID3D11Buffer* vs_constants=nullptr;
+    ID3D11SamplerState* ps_sampler=nullptr;ID3D11ShaderResourceView* ps_resource1=nullptr;ID3D11ShaderResourceView* ps_resource2=nullptr;ID3D11Buffer* vs_constants=nullptr;
     UINT scissor_count=D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;D3D11_RECT scissors[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE]{};
     void save(ID3D11DeviceContext* c) {
         c->RSGetViewports(&viewport_count,viewports);c->RSGetState(&raster);
@@ -206,7 +228,7 @@ struct State {
         c->HSGetShader(&hs,nullptr,nullptr);c->DSGetShader(&ds,nullptr,nullptr);
         c->PSGetShaderResources(0,1,&ps_resource);c->PSGetConstantBuffers(0,1,&ps_constants);
         c->IAGetIndexBuffer(&index_buffer,&index_format,&index_offset);c->PSGetSamplers(0,1,&ps_sampler);
-        c->PSGetShaderResources(1,1,&ps_resource1);c->RSGetScissorRects(&scissor_count,scissors);c->VSGetConstantBuffers(0,1,&vs_constants);
+        c->PSGetShaderResources(1,1,&ps_resource1);c->PSGetShaderResources(2,1,&ps_resource2);c->RSGetScissorRects(&scissor_count,scissors);c->VSGetConstantBuffers(0,1,&vs_constants);
     }
     void restore(ID3D11DeviceContext* c) {
         c->RSSetViewports(viewport_count,viewports);c->RSSetState(raster);
@@ -216,9 +238,9 @@ struct State {
         c->HSSetShader(hs,nullptr,0);c->DSSetShader(ds,nullptr,0);
         c->PSSetShaderResources(0,1,&ps_resource);c->PSSetConstantBuffers(0,1,&ps_constants);
         c->IASetIndexBuffer(index_buffer,index_format,index_offset);c->PSSetSamplers(0,1,&ps_sampler);
-        c->PSSetShaderResources(1,1,&ps_resource1);c->RSSetScissorRects(scissor_count,scissors);
+        c->PSSetShaderResources(1,1,&ps_resource1);c->PSSetShaderResources(2,1,&ps_resource2);c->RSSetScissorRects(scissor_count,scissors);
         c->VSSetConstantBuffers(0,1,&vs_constants);
-        collision_gpu::drop(index_buffer);collision_gpu::drop(ps_sampler);collision_gpu::drop(ps_resource1);collision_gpu::drop(vs_constants);
+        collision_gpu::drop(index_buffer);collision_gpu::drop(ps_sampler);collision_gpu::drop(ps_resource1);collision_gpu::drop(ps_resource2);collision_gpu::drop(vs_constants);
         collision_gpu::drop(raster);collision_gpu::drop(blend);collision_gpu::drop(depth);collision_gpu::drop(layout);collision_gpu::drop(buffer);
         collision_gpu::drop(vs);collision_gpu::drop(ps);collision_gpu::drop(gs);collision_gpu::drop(hs);collision_gpu::drop(ds);
         collision_gpu::drop(ps_resource);collision_gpu::drop(ps_constants);
@@ -229,12 +251,13 @@ struct State {
 };
 // The scene-depth test's constants: camera, lens, camera viewport in target pixels,
 // scene texels per target pixel and the zombie boxes.
-void fill_occlusion(Constants& values,const Occlusion& o,float x,float y,float w,float h,unsigned width,unsigned height) {
+void fill_occlusion(Constants& values,const Occlusion& o,float x,float y,float w,float h,unsigned width,unsigned height,bool models) {
     for(int i=0;i<3;++i) {values.origin[i]=o.origin[i];values.forward[i]=o.forward[i];values.left[i]=o.left[i];values.up[i]=o.up[i];}
     values.lens[0]=o.tan_x;values.lens[1]=o.tan_y;values.lens[2]=o.near_plane;values.lens[3]=o.weapon_distance;
     values.port[0]=x;values.port[1]=y;values.port[2]=w;values.port[3]=h;
-    const int boxes=std::min(std::max(o.box_count,0),Occlusion::max_boxes);
+    const int boxes=std::min(std::max(o.box_count,0)+(models?std::max(o.model_count,0):0),Occlusion::max_boxes);
     values.test[0]=o.tolerance;values.test[1]=o.relative;values.test[2]=1;values.test[3]=static_cast<float>(boxes);
+    values.extra[0]=static_cast<float>(std::min(std::max(o.box_count,0),Occlusion::max_boxes));values.extra[1]=o.model_tolerance;values.extra[2]=o.model_relative;values.extra[3]=static_cast<float>(o.mode);values.tint[0]=o.behind_strength;
     values.scale[0]=static_cast<float>(scene_desc.Width)/static_cast<float>(width);values.scale[1]=static_cast<float>(scene_desc.Height)/static_cast<float>(height);
     for(int b=0;b<boxes;++b)for(int k=0;k<3;++k) {values.boxes[b*2][k]=o.boxes[b][k];values.boxes[b*2+1][k]=o.boxes[b][3+k];}
 }
@@ -262,7 +285,7 @@ bool draw(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11RenderTargetVi
     }
     context->Unmap(vertices,0);
     Constants values;
-    if(scene)fill_occlusion(values,*occlusion,batch.viewport_x,batch.viewport_y,batch.viewport_width,batch.viewport_height,width,height);
+    if(scene)fill_occlusion(values,*occlusion,batch.viewport_x,batch.viewport_y,batch.viewport_width,batch.viewport_height,width,height,true);
     if(FAILED(context->Map(constants,0,D3D11_MAP_WRITE_DISCARD,0,&mapped)))return false;
     std::memcpy(mapped.pData,&values,sizeof(values));context->Unmap(constants,0);
     State saved;saved.save(context);
@@ -274,7 +297,8 @@ bool draw(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11RenderTargetVi
     context->IASetInputLayout(layout);context->IASetVertexBuffers(0,1,&vertices,&stride,&offset);
     context->VSSetShader(vertex_shader,nullptr,0);context->PSSetShader(pixel_shader,nullptr,0);
     context->GSSetShader(nullptr,nullptr,0);context->HSSetShader(nullptr,nullptr,0);context->DSSetShader(nullptr,nullptr,0);
-    context->PSSetConstantBuffers(0,1,&constants);context->PSSetShaderResources(0,1,&scene);
+    ID3D11ShaderResourceView* views[2]={scene,occlusion&&occlusion->mode==1?mask_view:nullptr};
+    context->PSSetConstantBuffers(0,1,&constants);context->PSSetShaderResources(0,2,views);
     const float factor[4]{};
     context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     // Pass 1: nearest depth only. Pass 2: colour exactly that nearest surface.
@@ -298,7 +322,7 @@ bool draw(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11RenderTargetVi
         context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         context->Draw(static_cast<UINT>(batch.overlay_fills.size()),first[2]);
     }
-    ID3D11ShaderResourceView* none=nullptr;context->PSSetShaderResources(0,1,&none);
+    ID3D11ShaderResourceView* none[2]{};context->PSSetShaderResources(0,2,none);
     saved.restore(context);
     return scene!=nullptr;
 }
@@ -326,7 +350,7 @@ bool draw_list(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11RenderTar
     if(FAILED(context->Map(list_indices,0,D3D11_MAP_WRITE_DISCARD,0,&mapped)))return false;
     std::memcpy(mapped.pData,list.IdxBuffer.Data,index_count*sizeof(ImDrawIdx));context->Unmap(list_indices,0);
     Constants values;
-    if(scene)fill_occlusion(values,*occlusion,camera_viewport[0],camera_viewport[1],camera_viewport[2],camera_viewport[3],width,height);
+    if(scene)fill_occlusion(values,*occlusion,camera_viewport[0],camera_viewport[1],camera_viewport[2],camera_viewport[3],width,height,false);
     values.scale[2]=static_cast<float>(width);values.scale[3]=static_cast<float>(height);  // pixels to clip space
     if(FAILED(context->Map(constants,0,D3D11_MAP_WRITE_DISCARD,0,&mapped)))return false;
     std::memcpy(mapped.pData,&values,sizeof(values));context->Unmap(constants,0);
@@ -357,7 +381,22 @@ bool draw_list(ID3D11Device* device,ID3D11DeviceContext* context,ID3D11RenderTar
     saved.restore(context);
     return true;
 }
+bool mask_begin(ID3D11Device* device,ID3D11DeviceContext* context,unsigned width,unsigned height,bool clear,MaskPass& out) {
+    if(!ready(device)||!context||!width||!height)return false;
+    if(!mask_texture||mask_width!=width||mask_height!=height) {
+        drop(mask_view);drop(mask_target);drop(mask_texture);mask_width=mask_height=0;
+        D3D11_TEXTURE2D_DESC t{};t.Width=width;t.Height=height;t.MipLevels=1;t.ArraySize=1;t.Format=DXGI_FORMAT_R8_UNORM;
+        t.SampleDesc.Count=1;t.Usage=D3D11_USAGE_DEFAULT;t.BindFlags=D3D11_BIND_RENDER_TARGET|D3D11_BIND_SHADER_RESOURCE;
+        if(FAILED(device->CreateTexture2D(&t,nullptr,&mask_texture))||FAILED(device->CreateRenderTargetView(mask_texture,nullptr,&mask_target))||
+           FAILED(device->CreateShaderResourceView(mask_texture,nullptr,&mask_view))) {drop(mask_view);drop(mask_target);drop(mask_texture);return false;}
+        mask_width=width;mask_height=height;
+    }
+    if(clear) {const float zero[4]{};context->ClearRenderTargetView(mask_target,zero);}
+    out.target=mask_target;out.shader=mask_shader;out.depth=mask_depth;
+    return true;
+}
 void release() {
+    drop(mask_view);drop(mask_target);drop(mask_texture);mask_width=mask_height=0;drop(mask_shader);drop(mask_depth);
     drop(vertex_shader);drop(pixel_shader);drop(layout);drop(vertices);vertex_capacity=0;drop(constants);
     drop(list_vertex_shader);drop(list_pixel_shader);drop(list_layout);drop(list_vertices);list_vertex_capacity=0;
     drop(list_indices);list_index_capacity=0;drop(list_sampler);drop(list_raster);

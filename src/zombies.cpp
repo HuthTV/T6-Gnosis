@@ -59,6 +59,15 @@ bool living_bounds(const Marker& m,nav::Vec3& origin,nav::Vec3& mins,nav::Vec3& 
     return nav::finite(origin)&&nav::finite(mins)&&nav::finite(maxs)&&mins.x<maxs.x&&mins.y<maxs.y&&mins.z<maxs.z&&
         maxs.x-mins.x<=256&&maxs.y-mins.y<=256&&maxs.z-mins.z<=256;
 }
+bool route(const Marker& m,const nav::Graph& g,Route& out,nav::Vec3& origin) {
+    // The game thread rewrites the route when it replans; two equal reads around the
+    // identity checks keep a half-written route from being drawn.
+    std::array<unsigned char,route_capacity*route_stride> points{},verify{};std::int16_t length=0,verify_length=0;nav::Vec3 goal{},verify_goal{};
+    if(!still_living(m,origin)||!read(m.actor+route_points,points)||!read(m.actor+route_length,length)||!read(m.actor+route_goal,goal))return false;
+    if(!read(m.actor+route_points,verify)||!read(m.actor+route_length,verify_length)||!read(m.actor+route_goal,verify_goal)||
+       points!=verify||length!=verify_length||std::memcmp(&goal,&verify_goal,sizeof(goal))||!still_living(m,origin))return false;
+    return decode_route(points.data(),length,goal,g,origin,out);
+}
 void update() {
     if(!ready)return;
     auto g=nav::graph();nav::Camera camera{};

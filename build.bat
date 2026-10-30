@@ -33,14 +33,14 @@ cl /nologo /c /O2 /MT /W3 /DNDEBUG /DWIN32 /D_WINDOWS /I../vendor/minhook-1.3.4/
 if errorlevel 1 goto failed
 cl /nologo /c /std:c++17 /EHsc /O2 /MT /W3 /DNDEBUG /DWIN32 /D_WINDOWS /I../vendor/imgui-1.91.9b ../vendor/imgui-1.91.9b/imgui.cpp ../vendor/imgui-1.91.9b/imgui_draw.cpp ../vendor/imgui-1.91.9b/imgui_tables.cpp ../vendor/imgui-1.91.9b/imgui_widgets.cpp ../vendor/imgui-1.91.9b/backends/imgui_impl_dx11.cpp ../vendor/imgui-1.91.9b/backends/imgui_impl_win32.cpp
 if errorlevel 1 goto failed
-cl /nologo /c /std:c++17 /EHsc /O2 /MT /W4 /WX /DNDEBUG /DWIN32 /D_WINDOWS /DNOMINMAX /I. /I../vendor/plutonium-sdk /I../vendor/imgui-1.91.9b /I../vendor/minhook-1.3.4/include ../src/plugin.cpp ../src/reader.cpp ../src/overlay.cpp ../src/zombies.cpp ../src/spawns.cpp ../src/spawns_native.cpp ../src/practice.cpp ../src/despawn.cpp ../src/despawn_schedule.cpp ../src/despawn_overlay.cpp ../src/staff_aid.cpp ../src/mob_aid.cpp ../src/world_collision.cpp ../src/collision_gpu.cpp ../src/frame_trace.cpp
+cl /nologo /c /std:c++17 /EHsc /O2 /MT /W4 /WX /DNDEBUG /DWIN32 /D_WINDOWS /DNOMINMAX /I. /I../vendor/plutonium-sdk /I../vendor/imgui-1.91.9b /I../vendor/minhook-1.3.4/include ../src/plugin.cpp ../src/reader.cpp ../src/overlay.cpp ../src/zombies.cpp ../src/spawns.cpp ../src/spawns_native.cpp ../src/practice.cpp ../src/despawn.cpp ../src/despawn_schedule.cpp ../src/despawn_overlay.cpp ../src/staff_aid.cpp ../src/mob_aid.cpp ../src/avogadro_aid.cpp ../src/world_collision.cpp ../src/collision_gpu.cpp ../src/frame_trace.cpp
 if errorlevel 1 goto failed
 rc /nologo /i . /fo T6Gnosis.res ../src/T6Gnosis.rc
 if errorlevel 1 goto failed
 rem Relocatable image with ASLR; /Brepro makes identical sources give an identical DLL.
-link /nologo /DLL /MACHINE:X86 /DYNAMICBASE /BASE:0x62000000 /INCREMENTAL:NO /Brepro /OUT:T6Gnosis.dll plugin.obj reader.obj overlay.obj zombies.obj spawns.obj spawns_native.obj practice.obj despawn.obj despawn_schedule.obj despawn_overlay.obj staff_aid.obj mob_aid.obj world_collision.obj collision_gpu.obj frame_trace.obj imgui.obj imgui_draw.obj imgui_tables.obj imgui_widgets.obj imgui_impl_dx11.obj imgui_impl_win32.obj buffer.obj hook.obj trampoline.obj hde32.obj T6Gnosis.res user32.lib gdi32.lib
+link /nologo /DLL /MACHINE:X86 /DYNAMICBASE /BASE:0x62000000 /INCREMENTAL:NO /Brepro /OUT:T6Gnosis.dll plugin.obj reader.obj overlay.obj zombies.obj spawns.obj spawns_native.obj practice.obj despawn.obj despawn_schedule.obj despawn_overlay.obj staff_aid.obj mob_aid.obj avogadro_aid.obj world_collision.obj collision_gpu.obj frame_trace.obj imgui.obj imgui_draw.obj imgui_tables.obj imgui_widgets.obj imgui_impl_dx11.obj imgui_impl_win32.obj buffer.obj hook.obj trampoline.obj hde32.obj T6Gnosis.res user32.lib gdi32.lib
 if errorlevel 1 goto failed
-for %%t in (projection_tests zombie_tests spawn_tests spawns_native_tests despawn_tests jump_timing_tests playable_area_tests) do (
+for %%t in (projection_tests zombie_tests spawn_tests spawns_native_tests despawn_tests jump_timing_tests playable_area_tests avogadro_tests) do (
     cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /WX /DNOMINMAX /I../src ../tests/%%t.cpp /Fe:%%t.exe >nul
     if errorlevel 1 goto failed
     %%t.exe

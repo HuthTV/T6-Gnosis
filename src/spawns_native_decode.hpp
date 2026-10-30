@@ -109,9 +109,9 @@ public:
             if(zone.type!=1) {result.reason="Native zone reference invalid";return result;}
             std::unordered_map<std::string,Value> fields_in_zone;
             if(!fields(zone.payload,fields_in_zone)) {result.reason="Native zone structure invalid";return result;}
-            for(const auto& registry:{std::pair<const char*,unsigned>{"spawn_locations",1}, {"leaper_locations",2}, {"screecher_locations",4}, {"mechz_locations",16}, {"brutus_locations",64}}) {
+            for(const auto& registry:{std::pair<const char*,unsigned>{"spawn_locations",1}, {"leaper_locations",2}, {"screecher_locations",4}, {"mechz_locations",16}, {"brutus_locations",64}, {"avogadro_locations",128}}) {
                 if(registry.second==2&&map!="zm_highrise")continue;
-                if(registry.second==4&&map!="zm_transit")continue;
+                if((registry.second==4||registry.second==128)&&map!="zm_transit")continue;
                 if(registry.second==16&&map!="zm_tomb")continue;
                 if(registry.second==64&&map!="zm_prison")continue;
                 const auto locations=fields_in_zone.find(registry.first);if(locations==fields_in_zone.end())continue;

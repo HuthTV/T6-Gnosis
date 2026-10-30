@@ -12,6 +12,7 @@
 #include "despawn_schedule.hpp"
 #include "staff_aid.hpp"
 #include "mob_aid.hpp"
+#include "avogadro_aid.hpp"
 #include "world_collision.hpp"
 #include "helper_deploy.hpp"
 #include "version.hpp"
@@ -19,7 +20,7 @@
 namespace {
 // The helper's "plugin present" test (builtinfunctionexists); it never runs anything.
 void PLUTONIUM_CALLBACK plugin_loaded() {}
-void clear_session(int unused) {nav::clear_graph(unused);zombies::clear();spawns::clear();despawn::clear();triggers::clear();staff::clear();mob::clear();collision::clear();}
+void clear_session(int unused) {nav::clear_graph(unused);zombies::clear();spawns::clear();despawn::clear();triggers::clear();staff::clear();mob::clear();avogadro::clear();collision::clear();}
 void update_zombies() {try {zombies::update();despawn::schedule::update();}catch(...) {zombies::clear();despawn::schedule::clear();}}
 plutonium::sdk::interfaces::scheduler::evaluation update_spawns() {
     try {spawns::update();}catch(...) {spawns::clear();} try {triggers::update();}catch(...) {triggers::clear();} try {collision::update();}catch(...) {collision::clear();}
@@ -48,9 +49,11 @@ class Navigation final:public plutonium::sdk::plugin {
         api->callbacks()->on_scripts_execute(despawn::clear);
         api->callbacks()->on_scripts_execute(staff::clear);
         api->callbacks()->on_scripts_execute(mob::clear);
+        api->callbacks()->on_scripts_execute(avogadro::clear);
         api->callbacks()->on_scripts_execute(collision::clear);
         unavailable(staff::startup(api),"[T6 Gnosis] Origins aids unavailable on this game build.");
         unavailable(mob::startup(api),"[T6 Gnosis] Mob of the Dead aids unavailable on this game build.");
+        unavailable(avogadro::startup(api),"[T6 Gnosis] TranZit Avogadro aid unavailable on this game build.");
         unavailable(despawn::startup(api),"[T6 Gnosis] Despawn tracker unavailable on this game build.");
         if(!nav::bindings_match()) {api->logging()->info("[T6 Gnosis] Unsupported game build; disabled.");return;}
         active=overlay::startup();
@@ -64,7 +67,7 @@ class Navigation final:public plutonium::sdk::plugin {
         api->scheduler()->on_frame(update_zombies,plutonium::sdk::interfaces::scheduler::thread::game);
         api->logging()->info("[T6 Gnosis] " GNOSIS_VERSION " ready. F8 opens the menu.");
     }
-    void on_shutdown() override {practice::shutdown();if(active)overlay::shutdown();nav::clear_graph();zombies::clear();spawns::clear();despawn::clear();triggers::clear();staff::clear();mob::clear();collision::clear();}
+    void on_shutdown() override {practice::shutdown();if(active)overlay::shutdown();nav::clear_graph();zombies::clear();spawns::clear();despawn::clear();triggers::clear();staff::clear();mob::clear();avogadro::clear();collision::clear();}
 };
 }
 PLUTONIUM_API plutonium::sdk::plugin* on_initialize() {static Navigation plugin;return &plugin;}

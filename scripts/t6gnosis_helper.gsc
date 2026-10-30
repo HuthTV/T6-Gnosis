@@ -1,6 +1,6 @@
 // T6 Gnosis GSC helper, solo LAN only. Every Gnosis GSC helper lives in this
-// one script: despawn eligibility, trigger metadata and the Origins and Mob of the
-// Dead aids. It never replaces cleanup functions or deletes
+// one script: despawn eligibility, trigger metadata and the Origins, Mob of the
+// Dead and TranZit Avogadro aids. It never replaces cleanup functions or deletes
 // actors, and it changes nothing in the game: points, weapons and puzzle setup belong
 // to the practice menu (O-Prac), which Gnosis must stay fully compatible with (2026-10-20).
 // Private level/actor telemetry flags prevent duplicate helper/listener threads.
@@ -29,6 +29,21 @@
 #define GNOSIS_MOB_GRAVITY 800
 #define GNOSIS_MOB_MAX_SKULLS 8
 #define GNOSIS_MOB_MAX_BOXES 32
+// TranZit Avogadro aid: flag bits shared with src/avogadro_aid.hpp (avogadro::Flag).
+#define GNOSIS_AVO_PAIN 1
+#define GNOSIS_AVO_SHIELD 2
+#define GNOSIS_AVO_TELEPORT 4
+#define GNOSIS_AVO_TRAVERSE 8
+#define GNOSIS_AVO_ENEMY_ON_BUS 16
+#define GNOSIS_AVO_REGION_OCCUPIED 32
+#define GNOSIS_AVO_PLAYER_NEAR 64
+#define GNOSIS_AVO_POWER_ON 128
+#define GNOSIS_AVO_ARRIVING 256
+#define GNOSIS_AVO_BOLT_RANGE 512
+#define GNOSIS_AVO_BOLT_FACING 1024
+#define GNOSIS_AVO_BOLT_SIGHT 2048
+#define GNOSIS_AVO_SWITCHES_ON 4096
+#define GNOSIS_AVO_MAX_SPAWNS 96
 
 main() { gnosis_start(); }
 init() { gnosis_start(); }
@@ -53,6 +68,7 @@ gnosis_start()
     level thread gnosis_mob_aid();
     level thread gnosis_wind_aid();
     level thread gnosis_fire_aid();
+    level thread gnosis_avogadro_aid();
 }
 
 gnosis_loop()
@@ -845,5 +861,319 @@ gnosis_mob_boxes()
                 invokebuiltin( "GnosisMobBox", i, boxes[i].origin, boxes[i] getabsmins(), boxes[i] getabsmaxs(), planar[i] );
         }
         wait 1;
+    }
+}
+
+// TranZit Avogadro aid (2026-10-30). Mirrors vanilla _zm_ai_avogadro's think loop with
+// field reads and the same queries it makes (getanimfromasd, getmovedelta,
+// maymovefrompointtopoint, bullettracepassed); the plugin draws the result. Nothing here
+// may use script randomness: vanilla rolls storm regions, dashes and return rounds with
+// randomint, so a helper roll (array_randomize included) would shift them.
+gnosis_avogadro_aid()
+{
+    if ( !builtinfunctionexists( "GnosisAvogadroState" ) )
+        return;
+    while ( !isdefined( level.script ) )
+        wait 0.05;
+    if ( level.script != "zm_transit" )
+        return;
+    tick = 0;
+    while ( true )
+    {
+        players = getplayers();
+        avogadro = level.avogadro;
+        if ( players.size == 1 && isdefined( avogadro ) && isdefined( avogadro.state ) )
+        {
+            avogadro gnosis_avogadro_publish( players[0] );
+            // Dash queries run in their own thread, as gnosis_query_detour does: an error
+            // there ends only that thread, and its flag stays set so none run again.
+            if ( tick % 2 == 0 && ( avogadro.state == "chasing" || avogadro.state == "idle" ) && !( isdefined( level.gnosis_avogadro_dash_query ) && level.gnosis_avogadro_dash_query ) )
+                avogadro thread gnosis_avogadro_dashes();
+            if ( tick % 20 == 0 )
+                avogadro gnosis_avogadro_spawns();
+        }
+        tick = ( tick + 1 ) % 1000;
+        wait 0.05;
+    }
+}
+
+gnosis_avogadro_publish( player )
+{
+    now = gettime();
+    state = gnosis_avogadro_state_code( self.state );
+    flags = 0;
+    if ( isdefined( self.in_pain ) && self.in_pain )
+        flags = flags | GNOSIS_AVO_PAIN;
+    if ( isdefined( self.shield ) && self.shield )
+        flags = flags | GNOSIS_AVO_SHIELD;
+    if ( isdefined( self.is_teleport ) && self.is_teleport )
+        flags = flags | GNOSIS_AVO_TELEPORT;
+    if ( isdefined( self.is_traversing ) && self.is_traversing )
+        flags = flags | GNOSIS_AVO_TRAVERSE;
+    enemy = self.favoriteenemy;
+    if ( isdefined( enemy ) && isdefined( enemy.isonbus ) && enemy.isonbus )
+        flags = flags | GNOSIS_AVO_ENEMY_ON_BUS;
+    region = -1;
+    if ( isdefined( self.current_region ) )
+    {
+        region = gnosis_avogadro_region_code( self.current_region );
+        if ( gnosis_avogadro_region_occupied( self.current_region ) )
+            flags = flags | GNOSIS_AVO_REGION_OCCUPIED;
+    }
+    // region_empty: any player not in last stand within 3000 keeps him
+    // (_zm_laststand player_is_in_laststand).
+    downed = isdefined( player.revivetrigger );
+    if ( isdefined( player.no_revive_trigger ) && player.no_revive_trigger )
+        downed = isdefined( player.laststand ) && player.laststand;
+    if ( !downed && distancesquared( self.origin, player.origin ) < 9000000 )
+        flags = flags | GNOSIS_AVO_PLAYER_NEAR;
+    if ( isdefined( level.flag ) && isdefined( level.flag["power_on"] ) && level.flag["power_on"] )
+        flags = flags | GNOSIS_AVO_POWER_ON;
+    if ( isdefined( level.flag ) && isdefined( level.flag["switches_on"] ) && level.flag["switches_on"] )
+        flags = flags | GNOSIS_AVO_SWITCHES_ON;
+    // Storm timing as seen here, at most 50 ms late: vanilla's cloud thread picks a region
+    // on entry (always power) and again every 30 s. Returning, _in_cloud drops to 0 and,
+    // after the arrival animation, he waits 30 s for a player to enter the region.
+    timer = -1;
+    if ( state == 10 )
+    {
+        if ( !isdefined( level.gnosis_avogadro_cloud_start ) )
+            level.gnosis_avogadro_cloud_start = now;
+        // _in_cloud keeps the 0 of an earlier return until the first tick in the storm.
+        if ( isdefined( self._in_cloud ) && self._in_cloud )
+            level.gnosis_avogadro_cloud_seen = 1;
+        else if ( isdefined( level.gnosis_avogadro_cloud_seen ) )
+        {
+            flags = flags | GNOSIS_AVO_ARRIVING;
+            if ( !isdefined( level.gnosis_avogadro_landing ) )
+                level.gnosis_avogadro_landing = now;
+        }
+        if ( flags & GNOSIS_AVO_ARRIVING )
+        {
+            if ( isdefined( level.gnosis_avogadro_arrival_ms ) )
+                timer = level.gnosis_avogadro_landing + level.gnosis_avogadro_arrival_ms + 30000 - now;
+            else if ( !isdefined( level.gnosis_avogadro_arrival_query ) )
+                self thread gnosis_avogadro_arrival_length();
+        }
+        else
+            timer = 30000 - ( now - level.gnosis_avogadro_cloud_start ) % 30000;
+    }
+    else
+    {
+        level.gnosis_avogadro_cloud_start = undefined;
+        level.gnosis_avogadro_cloud_seen = undefined;
+        level.gnosis_avogadro_landing = undefined;
+        if ( isdefined( self.region_timer ) )
+            timer = self.region_timer - now;
+    }
+    // check_range_attack with every condition evaluated, so the plugin can show which
+    // fails; while he waits to be seen, player_look's facing test instead.
+    target = enemy;
+    if ( !isdefined( target ) && state == 2 )
+        target = player;
+    if ( isdefined( target ) )
+    {
+        to_target = target.origin - self.origin;
+        forward = vectornormalize( anglestoforward( self.angles ) );
+        eye = self geteye();
+        target_eye = target geteye();
+        if ( isdefined( enemy ) )
+        {
+            dist_sq = lengthsquared( to_target );
+            if ( dist_sq > 14400 && dist_sq < 360000 )
+            {
+                flags = flags | GNOSIS_AVO_BOLT_RANGE;
+                if ( bullettracepassed( eye, target_eye, 0, undefined ) )
+                    flags = flags | GNOSIS_AVO_BOLT_SIGHT;
+            }
+            if ( vectordot( forward, vectornormalize( to_target ) ) > 0.99 )
+                flags = flags | GNOSIS_AVO_BOLT_FACING;
+        }
+        look = -2;
+        if ( state == 2 )
+            look = vectordot( vectornormalize( anglestoforward( player.angles ) ), vectornormalize( self.origin - player.origin ) );
+        invokebuiltin( "GnosisAvogadroAim", forward, eye, target_eye, length( to_target ), look );
+    }
+    hits = 0;
+    if ( isdefined( self.hit_by_melee ) )
+        hits = self.hit_by_melee;
+    absorbed = 0;
+    if ( isdefined( self.damage_absorbed ) )
+        absorbed = self.damage_absorbed;
+    phase_ms = 0;
+    if ( isdefined( self.phase_time ) )
+        phase_ms = self.phase_time - now;
+    return_round = -1;
+    if ( isdefined( self.return_round ) )
+        return_round = self.return_round;
+    round_number = 0;
+    if ( isdefined( level.round_number ) )
+        round_number = level.round_number;
+    invokebuiltin( "GnosisAvogadroState", self getentitynumber(), state, flags, hits, absorbed, phase_ms, region, return_round, round_number, timer );
+    if ( state >= 5 && state <= 7 && isdefined( level.the_bus ) )
+        self gnosis_avogadro_bus( state );
+}
+
+gnosis_avogadro_state_code( state )
+{
+    if ( !isdefined( state ) )
+        return 0;
+    switch ( state )
+    {
+        case "chamber":
+            return 1;
+        case "wait_for_player":
+            return 2;
+        case "idle":
+            return 3;
+        case "chasing":
+            return 4;
+        case "chasing_bus":
+            return 5;
+        case "attacking_bus":
+            return 6;
+        case "stay_attached":
+            return 7;
+        case "phasing":
+            return 8;
+        case "exiting":
+            return 9;
+        case "cloud":
+            return 10;
+    }
+    return 0;
+}
+
+// Vanilla's level.transit_region keys, in cloud_update_fx's order.
+gnosis_avogadro_region_code( region )
+{
+    names = array( "bus", "diner", "farm", "cornfield", "power", "town" );
+    for ( i = 0; i < names.size; i++ )
+    {
+        if ( names[i] == region )
+            return i;
+    }
+    return -1;
+}
+
+gnosis_avogadro_zone_region( zone )
+{
+    if ( !isdefined( level.transit_region ) )
+        return -1;
+    names = array( "bus", "diner", "farm", "cornfield", "power", "town" );
+    for ( i = 0; i < names.size; i++ )
+    {
+        region = level.transit_region[names[i]];
+        if ( !isdefined( region ) || !isdefined( region.zones ) )
+            continue;
+        foreach ( name in region.zones )
+        {
+            if ( name == zone )
+                return i;
+        }
+    }
+    return -1;
+}
+
+// get_player_in_region without its array_randomize: is any zone of the region occupied.
+gnosis_avogadro_region_occupied( region )
+{
+    if ( !isdefined( level.transit_region ) || !isdefined( level.transit_region[region] ) || !isdefined( level.zones ) )
+        return 0;
+    foreach ( zone in level.transit_region[region].zones )
+    {
+        if ( isdefined( level.zones[zone] ) && isdefined( level.zones[zone].is_occupied ) && level.zones[zone].is_occupied )
+            return 1;
+    }
+    return 0;
+}
+
+// Bus states: chasing_bus runs to the nearest bus opening (chase_bus_entry); the attack
+// stops the bus after 20 s of draining and shocks riders every 2 s (bus_disable,
+// attach_update).
+gnosis_avogadro_bus( state )
+{
+    tag = undefined;
+    if ( state == 5 && isdefined( self.chase_bus_entry ) )
+        tag = self.chase_bus_entry.tagname;
+    else if ( state != 5 && isdefined( self.bus_attack_struct ) )
+        tag = self.bus_attack_struct.window_tag;
+    if ( !isdefined( tag ) )
+        return;
+    attack_ms = -1;
+    if ( state == 6 && isdefined( self.bus_attack_time ) )
+        attack_ms = int( 20000 - self.bus_attack_time * 1000 );
+    shock_ms = -1;
+    if ( state != 5 && isdefined( self.bus_shock_time ) )
+        shock_ms = int( 2000 - self.bus_shock_time * 1000 );
+    invokebuiltin( "GnosisAvogadroBus", level.the_bus gettagorigin( tag ), attack_ms, shock_ms );
+}
+
+// The 12 dashes check_phase picks from (level.avogadro_phase: forward, left, right, back;
+// substates 0-2), with vanilla's end point (getanimendpos is localtoworldcoords of
+// getmovedelta( anim, 0, 1 )) and its test: a dash is taken only when
+// maymovefrompointtopoint clears it.
+gnosis_avogadro_dashes()
+{
+    level.gnosis_avogadro_dash_query = 1;
+    if ( !isdefined( level.avogadro_phase ) || level.avogadro_phase.size != 4 )
+        return;
+    for ( i = 0; i < 4; i++ )
+    {
+        for ( j = 0; j < 3; j++ )
+        {
+            anim_id = self getanimfromasd( level.avogadro_phase[i].animstate, j );
+            end = self localtoworldcoords( getmovedelta( anim_id, 0, 1 ) );
+            clear = 0;
+            if ( self maymovefrompointtopoint( self.origin, end ) )
+                clear = 1;
+            invokebuiltin( "GnosisAvogadroDash", i * 3 + j, end, clear );
+        }
+    }
+    level.gnosis_avogadro_dash_query = 0;
+}
+
+// Arrival animation length (cloud_update plays zm_arrival before its 30 s wait). Its own
+// thread: if the query errors, the leave time is shown without it.
+gnosis_avogadro_arrival_length()
+{
+    level.gnosis_avogadro_arrival_query = 1;
+    level.gnosis_avogadro_arrival_ms = int( getanimlength( self getanimfromasd( "zm_arrival", 0 ) ) * 1000 );
+}
+
+// Every avogadro_location, flagged when cloud_find_spawn could pick it now: in a zone of
+// the storm's region that is enabled and allows spawning (the Bus Depot's zone_pri only
+// once occupied or its yard door is open). Unlike ordinary spawns the zone need not be
+// active, and the spot's own is_enabled is not checked.
+gnosis_avogadro_spawns()
+{
+    if ( !isdefined( level.zones ) )
+        return;
+    storm = -1;
+    if ( self.state == "cloud" && isdefined( self.current_region ) )
+        storm = gnosis_avogadro_region_code( self.current_region );
+    index = 0;
+    foreach ( name in getarraykeys( level.zones ) )
+    {
+        zone = level.zones[name];
+        if ( !isdefined( zone.avogadro_locations ) )
+            continue;
+        region = gnosis_avogadro_zone_region( name );
+        candidate = 0;
+        if ( storm >= 0 && region == storm && isdefined( zone.is_enabled ) && zone.is_enabled && isdefined( zone.is_spawning_allowed ) && zone.is_spawning_allowed )
+        {
+            candidate = 1;
+            if ( name == "zone_pri" && !( isdefined( zone.is_occupied ) && zone.is_occupied ) && !( isdefined( level.flag ) && isdefined( level.flag["OnPriDoorYar2"] ) && level.flag["OnPriDoorYar2"] ) )
+                candidate = 0;
+        }
+        foreach ( spot in zone.avogadro_locations )
+        {
+            if ( index >= GNOSIS_AVO_MAX_SPAWNS )
+                return;
+            if ( !isdefined( spot.origin ) )
+                continue;
+            invokebuiltin( "GnosisAvogadroSpawn", index, spot.origin, candidate, region );
+            index++;
+        }
     }
 }

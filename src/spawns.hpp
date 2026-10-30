@@ -3,7 +3,7 @@
 
 namespace plutonium::sdk::v1 {class iinterface;}
 namespace spawns {
-// Registry membership: normal=1, leaper=2, Denizen=4, ghost=8, Panzer=16, Templar=32, Brutus=64. Special chooser state is not decoded.
+// Registry membership: normal=1, leaper=2, Denizen=4, ghost=8, Panzer=16, Templar=32, Brutus=64, Avogadro=128. Special chooser state is not decoded.
 struct Site {nav::Vec3 origin;std::uint32_t id=0;bool active=false;unsigned types=1;};
 // Rendering groups only exactly coincident finite origins. Keep raw registry
 // records/counts intact; nearby authored positions are not equivalent sites.
@@ -23,7 +23,7 @@ inline std::vector<Site> drawing_sites(std::vector<Site> sites) {
 }
 inline std::string site_label(unsigned types) {
     std::string label;
-    for(const auto& identity:{std::pair<unsigned,const char*>{1,"Zombie"},{2,"Leaper"},{4,"Denizen"},{8,"Ghost"},{16,"Panzer"},{32,"Templar"},{64,"Brutus"}})
+    for(const auto& identity:{std::pair<unsigned,const char*>{1,"Zombie"},{2,"Leaper"},{4,"Denizen"},{8,"Ghost"},{16,"Panzer"},{32,"Templar"},{64,"Brutus"},{128,"Avogadro"}})
         if(types&identity.first) {if(!label.empty())label+='\n';label+=identity.second;}
     return label;
 }

@@ -30,5 +30,24 @@ int main() {
     check(moved.x-near.x==4&&moved.y-near.y==7&&moved.z-near.z==5,"anchor tracks current motion without historical lag");
     const auto below=zombies::marker_anchor({0,0,-400});
     check(below.z==-340,"negative map elevation retains constant relative height");
+    // Route: point 0 is the far end, point length-1 the start (live TranZit layout).
+    nav::Graph g;g.nodes.resize(3);g.nodes[0].origin={0,0,0};g.nodes[1].origin={256,0,0};g.nodes[2].origin={256,256,0};
+    std::array<unsigned char,zombies::route_capacity*zombies::route_stride> raw{};
+    auto point=[&](int i,nav::Vec3 at,std::int32_t node) {std::memcpy(raw.data()+i*zombies::route_stride,&at,12);std::memcpy(raw.data()+i*zombies::route_stride+24,&node,4);};
+    point(0,{300,400,0},-1);point(1,{256,256,0},2);point(2,{256,0,0},1);point(3,{0,0,0},0);
+    zombies::Route r;
+    check(zombies::decode_route(raw.data(),4,{300,400,0},g,{10,0,0},r)&&r.points.size()==4,"route decoded");
+    check(r.points.front().x==0&&r.points.back().y==400&&r.complete,"walking order from the start to the goal");
+    check(zombies::decode_route(raw.data(),4,{900,900,0},g,{10,0,0},r)&&!r.complete,"route cut short of a farther goal");
+    check(!zombies::decode_route(raw.data(),0,{300,400,0},g,{10,0,0},r)&&!zombies::decode_route(raw.data(),33,{300,400,0},g,{10,0,0},r),"route length bounds");
+    check(!zombies::decode_route(raw.data(),4,{300,400,0},g,{2000,0,0},r),"start far from the actor rejected");
+    point(1,{250,256,0},2);check(!zombies::decode_route(raw.data(),4,{300,400,0},g,{10,0,0},r),"point off its node rejected");
+    point(1,{256,256,0},3);check(!zombies::decode_route(raw.data(),4,{300,400,0},g,{10,0,0},r),"node index outside the graph rejected");
+    point(1,{256,256,0},-2);check(!zombies::decode_route(raw.data(),4,{300,400,0},g,{10,0,0},r),"negative index other than -1 rejected");
+    point(1,{256,256,0},2);
+    check(zombies::decode_route(raw.data(),4,{300,400,0},g,{10,0,0},r),"restored route accepted");
+    check(zombies::route_ahead(r.points,{10,0,0})==1,"start already passed on the first segment");
+    check(zombies::route_ahead(r.points,{-40,0,0})==0,"start still ahead behind it");
+    check(zombies::route_ahead(r.points,{256,200,0})==2,"two points passed further along");
     std::printf("Zombie identification checks: %s (%d failures)\n",failures?"FAIL":"PASS",failures);return failures?1:0;
 }

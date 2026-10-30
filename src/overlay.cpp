@@ -33,6 +33,7 @@
 #include "version.hpp"
 #include "staff_aid.hpp"
 #include "mob_aid.hpp"
+#include "avogadro_aid.hpp"
 #include "world_collision.hpp"
 #include "gsc_args.hpp"
 #include "collision_gpu.hpp"
@@ -66,9 +67,25 @@ bool spawn_sites=false;
 bool trigger_positions=false,trigger_labels=false,playable_areas=false,player_bounds=false;
 bool wind_aid=true,fire_aid=true,wind_details=false,fire_details=false;
 bool mob_skulls=false,mob_boxes=false;  // Mob of the Dead blue-skull aid and Afterlife shock boxes
+bool avogadro_aid=false,avogadro_dashes=true,avogadro_route=true;  // TranZit Avogadro aid and its two drawings
+// User requests 2026-10-30: the label over his head only within avogadro_range (else the
+// top panel), an option to keep it at the top always, and his spawn locations here too.
+bool avogadro_locked=false,avogadro_spawns=false;float avogadro_range=1500;
 bool world_collision=false;
-float collision_range=600,collision_opacity=0.85f;
-unsigned collision_drawn=0;
+// Collision draws as high and low as wide (2026-10-30): with the usual radius/3 height
+// an overhead sign board vanished while its posts stayed. Default radius 1000 (user request).
+float collision_range=1000,collision_opacity=0.85f;
+// Model-entity boxes (approximate model collision) are switched off: the user found them
+// not useful (2026-10-30). collision::movers keeps the code behind its model_bounds flag.
+constexpr bool collision_model_bounds=false;
+// Moving brush collision (doors, elevators, bus clips) is switched off too (user request
+// 2026-10-30: the grey boxes are not useful); collision::movers keeps the code.
+constexpr bool collision_moving=false;
+// Draw collision inside the game's frame, after the world and before any model, so every
+// model covers it with the game's own depth (frame_trace::set_world_injection). Off: the
+// older drawing after the frame with the box mask.
+bool collision_in_frame=true;
+unsigned collision_drawn=0,collision_movers=0;  // faces drawn; moving entities posed (elevators, bus clips)
 // Strength of everything drawn behind the pause menu (user choice 2026-10-13).
 constexpr float paused_strength=0.5f;
 bool frame_paused=false;
@@ -114,7 +131,7 @@ std::array<bool,256> down{};
 // Quick controls: one key per major top-level toggle (user request 2026-10-20), in
 // menu order. setting is the cfg key name (keep its spelling: saved binds use it).
 struct QuickBinding {const char* label;const char* setting;bool* value;int key=0;};
-std::array<QuickBinding,18> quick{{
+std::array<QuickBinding,19> quick{{
     {"Overlay master switch","key_overlay",&visible},{"Stamina bar","key_stamina_bar",&show_stamina},
     {"Speedometer","key_speedometer",&show_speedometer},{"Jump stats","key_jump_stats",&show_jump_stats},
     {"Wallhack","key_wallhack",&zombie_markers},{"Despawn tracker","key_despawn_tracker",&despawn::ui::settings.enabled},
@@ -124,7 +141,7 @@ std::array<QuickBinding,18> quick{{
     {"Playable area","key_playable_area",&playable_areas},{"NAV nodes","key_nav_nodes",&nodes},
     {"NAV links","key_nav_links",&links},{"Origins wind aid","key_wind_aid",&wind_aid},
     {"Origins fire aid","key_fire_aid",&fire_aid},{"Mob blue skull aid","key_mob_skulls",&mob_skulls},
-    {"Mob shock boxes","key_mob_shock_boxes",&mob_boxes}}};
+    {"Mob shock boxes","key_mob_shock_boxes",&mob_boxes},{"TranZit Avogadro aid","key_avogadro_aid",&avogadro_aid}}};
 int binding_capture=-1;
 // Saved settings (user request 2026-10-13): T6Gnosis.cfg next to the DLL, one
 // key=value per line. The keys are the file format, so keep their spelling when
@@ -138,8 +155,9 @@ BoolSetting bool_settings[]={
     {"stamina_bar",&show_stamina},{"speedometer",&show_speedometer},{"jump_stats",&show_jump_stats},
     {"wind_aid",&wind_aid},{"wind_details",&wind_details},{"fire_aid",&fire_aid},{"fire_details",&fire_details},
     {"mob_skulls",&mob_skulls},{"mob_shock_boxes",&mob_boxes},
+    {"avogadro_aid",&avogadro_aid},{"avogadro_dashes",&avogadro_dashes},{"avogadro_route",&avogadro_route},{"avogadro_locked",&avogadro_locked},{"avogadro_spawns",&avogadro_spawns},
     {"spawn_points",&spawn_sites},{"spawn_labels",&spawn_labels},{"special_spawns",&special_spawn_sites},{"active_spawns_only",&active_spawns_only},
-    {"world_collision",&world_collision},
+    {"world_collision",&world_collision},{"collision_in_frame",&collision_in_frame},
     {"zombie_collision_boxes",&zombie_boxes},
     
     {"player_bounds",&player_bounds},
@@ -147,7 +165,7 @@ BoolSetting bool_settings[]={
     {"nav_nodes",&nodes},{"nav_links",&links},{"nav_ids",&labels},{"nav_directions",&arrows},
 };
 FloatSetting float_settings[]={
-    {"spawn_radius",&spawn_range,400,8000},{"collision_radius",&collision_range,100,3000},
+    {"spawn_radius",&spawn_range,400,8000},{"avogadro_radius",&avogadro_range,200,8000},{"collision_radius",&collision_range,100,3000},
     {"collision_opacity",&collision_opacity,0.2f,1},
     {"trigger_radius",&trigger_range,400,8000},{"nav_radius",&range,400,8000},
     // Menu window placement, -1 until first saved (then the default placement is used).
@@ -342,8 +360,8 @@ void tip(const char* text) {
     }
 }
 // Full-width radius slider; the label lives in the format, with the derived height.
-void radius_slider(const char* id,float* value,float lo,float hi) {
-    char format[64]{};std::snprintf(format,sizeof(format),"Radius %%.0f  (+/- %.0f height)",vertical(*value));
+void radius_slider(const char* id,float* value,float lo,float hi,float share=vertical_share) {
+    char format[64]{};std::snprintf(format,sizeof(format),"Radius %%.0f  (+/- %.0f height)",*value*share);
     ImGui::SetNextItemWidth(-1);ImGui::SliderFloat(id,value,lo,hi,format,ImGuiSliderFlags_AlwaysClamp);
 }
 // Section header. status, when given, is drawn right-aligned on the bar in the
@@ -393,6 +411,27 @@ void menu(const FrameInfo& frame) {
         ImGui::Spacing();
         ImGui::BeginDisabled(!visible);
 
+        // Avogadro section first on TranZit (user request 2026-10-30).
+        const bool transit=frame.graph&&frame.graph->map=="maps/mp/zm_transit.d3dbsp";
+        if(transit&&section("Avogadro (TranZit)")) {
+            ImGui::Checkbox("Avogadro aid",&avogadro_aid);
+            tip("His state, hits and shield, and what he does next (phase dash cooldown, the three bolt conditions, when he leaves), over his head when he is near, else at the top of the screen. In the storm cloud the spots he can land on are marked. The bolt wedge at his feet: he can only fire with you 120-600 units away inside it. Classic TranZit only; he waits in the power station chamber until the power is on.");
+            ImGui::SameLine();ImGui::Checkbox("Spawn locations",&avogadro_spawns);
+            tip("Every avogadro_location, his own landing spots (not zombie spawns), through walls. Bright with a beam: where he can land from the storm right now.");
+            if(avogadro_aid) {
+                ImGui::Checkbox("Dashes",&avogadro_dashes);
+                tip("The 12 phase dashes his next roll picks from (forward, left, right, back; 3 lengths each), where the game's own check puts them from his current facing: yellow fits, red cross does not. Bright once the 2 s cooldown is over; then each 0.1 s he picks one at random and dashes only if it fits. He turns toward you as a dash starts, so the real dash can swing toward you.");
+                ImGui::SameLine();ImGui::Checkbox("Route",&avogadro_route);
+                tip("The route the engine planned for him over the NAV graph: the same pathing as ordinary zombies. A hollow ring marks where a long route is cut; the rest is planned as he walks.");
+                ImGui::SameLine();ImGui::Checkbox("Keep text at top",&avogadro_locked);
+                tip("Always show his lines at the top of the screen, never over his head.");
+                if(!avogadro_locked) {
+                    ImGui::SetNextItemWidth(-1);
+                    ImGui::SliderFloat("##avogadro_radius",&avogadro_range,200,8000,"Over his head within %.0f units",ImGuiSliderFlags_AlwaysClamp);
+                }
+            }
+        }
+
         const bool origins=frame.graph&&frame.graph->map=="maps/mp/zm_tomb.d3dbsp";
         if(origins&&section("Origins puzzle aids")) {
             ImGui::Checkbox("Wind puzzle aid",&wind_aid);
@@ -409,7 +448,6 @@ void menu(const FrameInfo& frame) {
             ImGui::SameLine();ImGui::Checkbox("Shock boxes (Afterlife)",&mob_boxes);
             tip("In Afterlife: each shock box's bounds and a ring at your height showing where you are within its 256-unit activation range (green when in range).");
         }
-
         if(section("Movement HUD")) {
             ImGui::Checkbox("Stamina bar",&show_stamina);ImGui::SameLine();
             ImGui::Checkbox("Speedometer",&show_speedometer);ImGui::SameLine();
@@ -436,7 +474,7 @@ void menu(const FrameInfo& frame) {
 
         if(section("Player collision")) {
             ImGui::Checkbox("World collision",&world_collision);
-            tip("Solid faces, darker edges; only the nearest collision surface shows. World brushes with solid or player-clip contents, plus collision triangles (two-sided, coloured by their stored facing). Entity collision (doors, debris, moving parts) and model/prop collision are not drawn. The player collides as a rounded body about 15 units in radius, so it stops short of brush corners. Drawn under the game HUD; only zombies and your weapon cover it.");
+            tip("Solid faces, darker edges; only the nearest collision surface shows. World brushes with solid or player-clip contents, plus collision triangles (two-sided, coloured by their stored facing). Brush-model entities (doors, elevators, bus clips) are drawn where they are now and follow them as they move; model collision (props, the bus body, the Origins tank, a placed shield) is not drawn. The player collides as a rounded body about 15 units in radius, so it stops short of brush corners. Drawn under the game HUD; only zombies and your weapon cover it.");
             ImGui::SameLine();ImGui::Checkbox("Zombie hitboxes",&zombie_boxes);
             tip("Each living zombie's entity bounds, the box the game uses for its collision. Works with or without world collision.");
             ImGui::SameLine();ImGui::Checkbox("bbox",&player_bounds);
@@ -448,10 +486,16 @@ void menu(const FrameInfo& frame) {
                 ImGui::SameLine();ImGui::TextColored(ImVec4(1,0.63f,0.24f,1),"Roofs");
                 ImGui::SameLine();ImGui::TextColored(ImVec4(1,0.31f,1,1),"Invisible");
                 tip("Clip-only brushes: they block the player but have no visible surface.");
+                ImGui::SameLine();ImGui::TextColored(ImVec4(0.84f,0.84f,0.88f,1),"Moving");
+                tip("Brush-model entities (doors, elevators, bus clips), drawn where they are now.");
             }
             if(world_collision) {
-                radius_slider("##collision_radius",&collision_range,100,3000);
+                radius_slider("##collision_radius",&collision_range,100,3000,1.0f);
                 ImGui::SetNextItemWidth(-1);ImGui::SliderFloat("##collision_opacity",&collision_opacity,0.2f,1.0f,"Opacity %.2f",ImGuiSliderFlags_AlwaysClamp);
+                ImGui::Checkbox("Models on top",&collision_in_frame);
+                tip("Props, corpses, zombies and the weapon show over the collision when they are in front of it; where the collision is clearly in front of a model (a clip wall, a model inside a clip), the model shows through a light tint. Each model draw is replayed into a mask inside the game's frame. Off: boxes decide what covers the collision.");
+                ImGui::TextDisabled("Moving entities in range: %u",collision_movers);
+                tip("Solid brush-model entities (doors, elevators, bus clips) drawn at their current position this frame.");
             }
         }
 
@@ -603,7 +647,7 @@ void draw_player_box(ImDrawList* list,const nav::Camera& cam,const triggers::Pla
 // directly a face looks at the eye; its edges are a darker shade of the same colour.
 unsigned draw_collision(ImDrawList* list,const nav::Camera& cam,const collision::Snapshot& s,float sx,float sy) {
  constexpr unsigned budget=15000;
- const auto c=cam.origin;const float h=collision_range,v=vertical(collision_range);
+ const auto c=cam.origin;const float h=collision_range,v=collision_range;
  const int x0=static_cast<int>(std::floor((c.x-h)/collision::cell_size)),x1=static_cast<int>(std::floor((c.x+h)/collision::cell_size));
  const int y0=static_cast<int>(std::floor((c.y-h)/collision::cell_size)),y1=static_cast<int>(std::floor((c.y+h)/collision::cell_size));
  std::vector<std::pair<float,std::uint32_t>> order;
@@ -653,10 +697,10 @@ unsigned draw_collision(ImDrawList* list,const nav::Camera& cam,const collision:
 // Triangles are two-sided: their winding is not reliable, so each is oriented toward
 // the eye and classified from there (horizontal below you = floor, above = roof).
 // Brush faces keep their outward normals and are culled when facing away.
-unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,float sx,float sy,collision_gpu::Batch& batch) {
+unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,const std::vector<collision::Face>& moving,float sx,float sy,collision_gpu::Batch& batch) {
  constexpr unsigned budget=40000;
  batch.viewport_x=cam.x*sx;batch.viewport_y=cam.y*sy;batch.viewport_width=cam.width*sx;batch.viewport_height=cam.height*sy;
- const auto c=cam.origin;const float h=collision_range,v=vertical(collision_range);
+ const auto c=cam.origin;const float h=collision_range,v=collision_range;
  const int x0=static_cast<int>(std::floor((c.x-h)/collision::cell_size)),x1=static_cast<int>(std::floor((c.x+h)/collision::cell_size));
  const int y0=static_cast<int>(std::floor((c.y-h)/collision::cell_size)),y1=static_cast<int>(std::floor((c.y+h)/collision::cell_size));
  // Candidates: faces listed in the cells under the range box, plus the very large ones.
@@ -668,14 +712,16 @@ unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,flo
  std::sort(candidates.begin(),candidates.end());candidates.erase(std::unique(candidates.begin(),candidates.end()),candidates.end());
  // Keep a face if any part of its bounds is in the range box; rank by the distance to
  // its nearest point, so tall or wide faces are not dropped for a far-away centre.
- std::vector<std::pair<float,std::uint32_t>> chosen;
- for(const auto index:candidates) {
-  const auto& f=s.faces[index];
-  if(f.hi.x<c.x-h||f.lo.x>c.x+h||f.hi.y<c.y-h||f.lo.y>c.y+h||f.hi.z<c.z-v||f.lo.z>c.z+v)continue;
-  if(!f.triangle&&nav::dot(f.normal,f.centre-c)>=0)continue;
+ // Moving faces (entity cmodels posed this frame) go through the same tests.
+ std::vector<std::pair<float,const collision::Face*>> chosen;
+ auto consider=[&](const collision::Face& f) {
+  if(f.hi.x<c.x-h||f.lo.x>c.x+h||f.hi.y<c.y-h||f.lo.y>c.y+h||f.hi.z<c.z-v||f.lo.z>c.z+v)return;
+  if(!f.triangle&&nav::dot(f.normal,f.centre-c)>=0)return;
   const float dx=std::max({f.lo.x-c.x,0.0f,c.x-f.hi.x}),dy=std::max({f.lo.y-c.y,0.0f,c.y-f.hi.y}),dz=std::max({f.lo.z-c.z,0.0f,c.z-f.hi.z});
-  chosen.push_back({dx*dx+dy*dy+dz*dz,index});
- }
+  chosen.push_back({dx*dx+dy*dy+dz*dz,&f});
+ };
+ for(const auto index:candidates)consider(s.faces[index]);
+ for(const auto& f:moving)consider(f);
  if(chosen.size()>budget) {
   std::nth_element(chosen.begin(),chosen.begin()+budget,chosen.end(),[](const auto& a,const auto& b){return a.first<b.first;});
   chosen.resize(budget);
@@ -691,8 +737,8 @@ unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,flo
   return collision_gpu::Vertex{-p.x/cam.tan_x,p.y/cam.tan_y,depth_scale*(p.z-collision_gpu::near_plane),p.z,color};
  };
  unsigned drawn=0;
- for(const auto& item:chosen) {const auto index=item.second;
-  const auto& f=s.faces[index];
+ for(const auto& item:chosen) {
+  const auto& f=*item.second;
   if(!f.blocking)continue;  // non-blocking faces are not collision
   auto n=f.normal;const auto kind=f.kind;const auto to=f.centre-c;
   // Triangles are drawn two-sided and shaded by the side facing the eye. Their colour
@@ -710,6 +756,9 @@ unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,flo
   case collision::Kind::clip:r=255;g=80;b=255;break;
   default:break;
   }
+  // Moving collision (doors, elevators, bus clips) in yellow, apart from the static
+  // surfaces (user request 2026-10-30).
+  if(f.moving) {r=215;g=215;b=225;}  // light grey (user request 2026-10-30; yellow before)
   if(!f.blocking) {r=150;g=150;b=150;}
   const float distance=std::sqrt(nav::dot(to,to));
   // Shade from the normal against the view direction, so coplanar faces (several
@@ -728,11 +777,16 @@ unsigned build_collision(const nav::Camera& cam,const collision::Snapshot& s,flo
   // Edges sit just in front of their own face (D24 depth resolves about 0.06 units at
   // 2000) and never reach the next priority step.
   const float edge_pull=push-std::min(0.3f+0.0002f*distance,0.8f);
-  const auto& p=f.points;
+  // The priority step moves the face away from the eye along its own normal, not along
+  // the eye ray: along the ray, a clip brush 0.5 above terrain won at grazing angles and
+  // lost up close, so the ground changed colour as you walked up (user report
+  // 2026-10-30). Edges keep their small pull toward the eye along the ray.
+  std::vector<nav::Vec3> p(f.points);
+  for(auto& point:p)point=point-n*push;
   for(std::size_t i=1;i+1<p.size();++i) {
-   batch.fills.push_back(vertex(p[0],push,fill));batch.fills.push_back(vertex(p[i],push,fill));batch.fills.push_back(vertex(p[i+1],push,fill));
+   batch.fills.push_back(vertex(p[0],0,fill));batch.fills.push_back(vertex(p[i],0,fill));batch.fills.push_back(vertex(p[i+1],0,fill));
   }
-  for(std::size_t i=0;i<p.size();++i) {batch.lines.push_back(vertex(p[i],edge_pull,edge));batch.lines.push_back(vertex(p[(i+1)%p.size()],edge_pull,edge));}
+  for(std::size_t i=0;i<p.size();++i) {batch.lines.push_back(vertex(p[i],edge_pull-push,edge));batch.lines.push_back(vertex(p[(i+1)%p.size()],edge_pull-push,edge));}
   ++drawn;
  }
  return drawn;
@@ -927,7 +981,13 @@ void inject_collision() {
     const float sy=static_cast<float>(backbuffer_height)/static_cast<float>(cam.y+cam.height);
     collision_gpu::Batch batch;
     batch.viewport_x=cam.x*sx;batch.viewport_y=cam.y*sy;batch.viewport_width=cam.width*sx;batch.viewport_height=cam.height*sy;
-    if(world_collision)if(const auto walls=collision::snapshot())collision_drawn=build_collision(cam,*walls,sx,sy,batch);
+    // Models on top: the model mask (written inside this frame by frame_trace) decides what
+    // covers the collision (collision_gpu mode 1) instead of the box mask.
+    const bool image_mask=collision_in_frame&&frame_trace::mask_written();
+    if(world_collision)if(const auto walls=collision::snapshot()) {
+        std::vector<collision::Face> moving;if(collision_moving)collision_movers=collision::movers(*walls,cam.origin,collision_range,moving,collision_model_bounds);
+        collision_drawn=build_collision(cam,*walls,moving,sx,sy,batch);
+    }
     if(!collision_gpu::ready(device))return;
     if(zombie_boxes)build_zombie_boxes(cam,batch);
     // The NAV graph rides in the same pass so zombies and the weapon cover it; draw()
@@ -974,14 +1034,27 @@ void inject_collision() {
                 lo={std::min(lo.x,t.lo[i].x),std::min(lo.y,t.lo[i].y),std::min(lo.z,t.lo[i].z)};
                 hi={std::max(hi.x,t.hi[i].x),std::max(hi.y,t.hi[i].y),std::max(hi.z,t.hi[i].z)};
             }
+            // A visibility mask, not the collision box: the entity bounds stop at 48 units
+            // (24 crawling) while heads reach about 70 and arms swing wide, so the bounds
+            // plus 12 cut heads off (live TranZit bounds and user screenshot, 2026-10-30).
             auto& b=occlusion.boxes[occlusion.box_count++];
-            b[0]=lo.x-12;b[1]=lo.y-12;b[2]=lo.z-4;b[3]=hi.x+12;b[4]=hi.y+12;b[5]=hi.z+12;
+            b[0]=lo.x-21;b[1]=lo.y-21;b[2]=lo.z-4;b[3]=hi.x+21;b[4]=hi.y+21;b[5]=std::max(hi.z+40,origin.z+64);
         }
+    // 3D models cover collision too (user request 2026-10-30): the nearest prop, script
+    // model and vehicle boxes fill the rest of the mask after the zombies.
+    if(world_collision)if(const auto walls=collision::snapshot()) {
+        std::vector<collision::ModelBox> models;
+        collision::model_boxes(*walls,cam.origin,collision_range,static_cast<std::size_t>(collision_gpu::Occlusion::max_boxes-occlusion.box_count),models);
+        for(const auto& m:models) {
+            auto& b=occlusion.boxes[occlusion.box_count+occlusion.model_count++];
+            b[0]=m.lo.x-2;b[1]=m.lo.y-2;b[2]=m.lo.z-2;b[3]=m.hi.x+2;b[4]=m.hi.y+2;b[5]=m.hi.z+2;
+        }
+    }
     for(auto i=trails.begin();i!=trails.end();) {
         const auto& t=i->second;const auto newest=t.time[(t.next+31)%32];
         if(now-newest>1000)i=trails.erase(i);else ++i;
     }
-    if(!batch.empty())collision_gpu::draw(device,context,target,backbuffer_width,backbuffer_height,batch,scene?&occlusion:nullptr);
+    if(!batch.empty()) {auto collision_occlusion=occlusion;if(image_mask)collision_occlusion.mode=1;collision_gpu::draw(device,context,target,backbuffer_width,backbuffer_height,batch,scene?&collision_occlusion:nullptr);}
     if(!list.VtxBuffer.empty()) {
         const float port[4]={batch.viewport_x,batch.viewport_y,batch.viewport_width,batch.viewport_height};
         collision_gpu::draw_list(device,context,target,backbuffer_width,backbuffer_height,list,port,scene?&occlusion:nullptr);
@@ -1524,6 +1597,152 @@ void draw_mob(ImDrawList* list,const nav::Camera& cam,const mob::View& view,floa
   }
  }
 }
+// TranZit Avogadro aid (avogadro_aid.hpp). His body is the native zombie marker with the
+// helper's entity number, so everything follows him at render rate.
+bool avogadro_body(const avogadro::Status& s,const nav::Graph& g,zombies::Marker& marker,nav::Vec3& origin) {
+    if(s.number<0||s.in_storm())return false;
+    const auto z=zombies::snapshot();
+    if(!z||GetTickCount64()-z->updated>200||!z->map||z->map->map!=g.map||z->map->base!=g.base||z->map->data!=g.data)return false;
+    for(const auto& m:z->markers)if(m.number==s.number) {marker=m;return zombies::still_living(m,origin);}
+    return false;
+}
+// World part, under the weapon and HUD: his route (the engine's own, checked node by node
+// against the NAV graph), the 12 phase dashes (yellow fits, red cross does not; bright once
+// the 2 s cooldown is over), the bolt wedge, the bus opening he runs for, and while he is in
+// the storm the spots he can land on.
+void draw_avogadro_world(ImDrawList* list,const nav::Camera& cam,const nav::Graph& g,const avogadro::View& view,float label_size,float sx,float sy) {
+    const auto now=GetTickCount64();const auto& s=view.status;
+    if(avogadro_spawns) {
+        // His own landing spots (avogadro_location), all of them, as electric-blue diamonds.
+        for(const auto& spot:view.spawns) {
+            if(!avogadro::fresh(spot.updated,now,avogadro::spawn_ms))continue;
+            const auto at=nav::camera_space(cam,spot.origin);if(!nav::point_visible(cam,at))continue;
+            const auto p=screen(nav::project(cam,at),sx,sy);constexpr float r=7;
+            const ImVec2 top(p.x,p.y-r),east(p.x+r,p.y),bottom(p.x,p.y+r),west(p.x-r,p.y);
+            list->AddQuad(top,east,bottom,west,IM_COL32(0,0,0,255),3);
+            list->AddQuadFilled(top,east,bottom,west,spot.candidate&&s.in_storm()?IM_COL32(150,230,255,255):IM_COL32(90,200,255,235));
+            list->AddText(fonts::get(label_size),label_size,ImVec2(p.x-r+1,p.y+r+3),IM_COL32(0,0,0,200),"Avogadro");
+            list->AddText(fonts::get(label_size),label_size,ImVec2(p.x-r,p.y+r+2),IM_COL32(150,215,255,255),"Avogadro");
+        }
+    }
+    if(!avogadro_aid||!avogadro::fresh(s.updated,now,avogadro::live_ms))return;
+    auto segment=[&](nav::Vec3 a,nav::Vec3 b,ImU32 color,float thickness) {
+        auto p=nav::camera_space(cam,a),q=nav::camera_space(cam,b);
+        if(nav::clip_segment(cam,p,q))list->AddLine(screen(nav::project(cam,p),sx,sy),screen(nav::project(cam,q),sx,sy),color,thickness);
+    };
+    auto pixel=[&](nav::Vec3 world,ImVec2& out) {
+        const auto at=nav::camera_space(cam,world);if(!nav::point_visible(cam,at))return false;
+        out=screen(nav::project(cam,at),sx,sy);return true;
+    };
+    auto label=[&](ImVec2 at,ImU32 color,const char* text) {
+        list->AddText(fonts::get(label_size),label_size,ImVec2(at.x+1,at.y+1),IM_COL32(0,0,0,200),text);
+        list->AddText(fonts::get(label_size),label_size,at,color,text);
+    };
+    constexpr ImU32 electric=IM_COL32(90,200,255,230),dash=IM_COL32(255,225,70,235),shade=IM_COL32(0,0,0,150);
+    const nav::Vec3 lift{0,0,6};
+    zombies::Marker marker{};nav::Vec3 origin{};
+    const bool body=avogadro_body(s,g,marker,origin);
+    zombies::Route route;
+    if(body&&avogadro_route&&(s.state==avogadro::chasing||s.state==avogadro::chasing_bus)&&zombies::route(marker,g,route,origin)) {
+        auto previous=origin;
+        for(auto i=zombies::route_ahead(route.points,origin);i<route.points.size();++i) {
+            segment(previous+lift,route.points[i]+lift,shade,5.0f);segment(previous+lift,route.points[i]+lift,electric,2.5f);
+            ImVec2 p{};if(pixel(route.points[i]+lift,p))list->AddCircleFilled(p,3.0f,electric,10);
+            previous=route.points[i];
+        }
+        // The far end: the goal itself (filled), or where a long stored route stops (hollow).
+        ImVec2 end{};
+        if(pixel(route.points.back()+lift,end)) {
+            if(route.complete) {list->AddCircleFilled(end,7,IM_COL32(0,0,0,220),16);list->AddCircleFilled(end,5,electric,16);}
+            else {list->AddCircle(end,8,IM_COL32(0,0,0,220),0,4.5f);list->AddCircle(end,8,electric,0,2.0f);}
+        }
+    }
+    if(body&&avogadro_dashes&&s.state==avogadro::chasing) {
+        const bool ready=s.phase_ms<=0&&!s.has(avogadro::traversing);
+        const ImU32 fits=ready?dash:IM_COL32(255,225,70,90),blocked=ready?IM_COL32(255,70,70,215):IM_COL32(255,70,70,80);
+        for(const auto& d:view.dashes) {
+            if(!avogadro::fresh(d.updated,now,avogadro::dash_ms))continue;
+            if(d.clear)segment(origin+lift,d.end+lift,fits,ready?2.0f:1.0f);
+            ImVec2 p{};if(!pixel(d.end+lift,p))continue;
+            if(d.clear) {list->AddCircleFilled(p,ready?5.5f:4.0f,IM_COL32(0,0,0,ready?220:110),12);list->AddCircleFilled(p,ready?4.0f:2.5f,fits,12);}
+            else {list->AddLine(ImVec2(p.x-4,p.y-4),ImVec2(p.x+4,p.y+4),blocked,2);list->AddLine(ImVec2(p.x-4,p.y+4),ImVec2(p.x+4,p.y-4),blocked,2);}
+        }
+    }
+    if(body&&s.state==avogadro::chasing&&avogadro::fresh(view.aim.updated,now,avogadro::live_ms)) {
+        // Flat at his feet. Vanilla tests the 3D direction to your origin, so with a height
+        // difference the real cone is narrower than the wedge.
+        const auto f=view.aim.forward;
+        if(f.x*f.x+f.y*f.y>0.01f) {
+            const float yaw=std::atan2(f.y,f.x),half=std::acos(avogadro::bolt_dot);
+            const bool aimed=s.has(avogadro::bolt_range)&&s.has(avogadro::bolt_facing);
+            const ImU32 color=aimed&&s.has(avogadro::bolt_sight)?IM_COL32(255,80,80,230):aimed?IM_COL32(255,190,60,200):IM_COL32(205,205,220,110);
+            auto at=[&](float angle,float radius) {return nav::Vec3{origin.x+radius*std::cos(angle),origin.y+radius*std::sin(angle),origin.z+lift.z};};
+            for(const float side:{-half,half})segment(at(yaw+side,avogadro::bolt_min),at(yaw+side,avogadro::bolt_max),color,1.5f);
+            constexpr int steps=6;
+            for(const float radius:{avogadro::bolt_min,avogadro::bolt_max})
+                for(int k=0;k<steps;++k)segment(at(yaw-half+2*half*static_cast<float>(k)/steps,radius),at(yaw-half+2*half*static_cast<float>(k+1)/steps,radius),color,1.5f);
+        }
+    }
+    if(body&&s.state==avogadro::chasing_bus&&avogadro::fresh(view.bus.updated,now,avogadro::live_ms)) {
+        segment(origin+nav::Vec3{0,0,40},view.bus.target,IM_COL32(255,190,60,210),2.0f);
+        ImVec2 p{};if(pixel(view.bus.target,p)) {list->AddCircle(p,8,IM_COL32(0,0,0,220),0,4.5f);list->AddCircle(p,8,IM_COL32(255,190,60,255),0,2.0f);}
+    }
+    if(s.in_storm()) {
+        for(const auto& spot:view.spawns) {
+            if(!avogadro::fresh(spot.updated,now,avogadro::spawn_ms)||!spot.candidate)continue;
+            const auto top=spot.origin+nav::Vec3{0,0,200};
+            segment(spot.origin,top,shade,5.0f);segment(spot.origin,top,electric,2.5f);
+            ImVec2 p{};if(!pixel(spot.origin,p))continue;
+            list->AddCircle(p,9,IM_COL32(0,0,0,220),0,5);list->AddCircle(p,9,electric,0,2.5f);
+            label(ImVec2(p.x+12,p.y-label_size*0.5f),electric,"Avogadro may land here");
+        }
+    }
+}
+ImU32 tone_color(avogadro::Tone tone) {
+    switch(tone) {
+    case avogadro::Tone::title:return IM_COL32(110,205,255,255);
+    case avogadro::Tone::good:return IM_COL32(80,235,120,255);
+    case avogadro::Tone::warn:return IM_COL32(255,200,70,255);
+    case avogadro::Tone::bad:return IM_COL32(255,95,95,255);
+    case avogadro::Tone::dim:return IM_COL32(175,180,190,235);
+    default:return IM_COL32(235,235,240,255);
+    }
+}
+// Text part, at Present over the weapon and HUD so it stays readable: describe()'s lines on
+// a plate over his head; while he is in the storm, his head is off screen or he is not
+// found, the same lines at the top centre of the screen.
+void draw_avogadro_text(ImDrawList* list,const nav::Camera& cam,const nav::Graph& g,const avogadro::View& view,float width,float height,float sx,float sy) {
+    const auto now=GetTickCount64();const auto& s=view.status;
+    const float scale=height/1080.0f;
+    const bool live=avogadro::fresh(s.updated,now,avogadro::live_ms);
+    std::vector<avogadro::Line> lines;
+    if(!live)lines.push_back({"Avogadro aid: no Avogadro in this game (classic TranZit only)",avogadro::Tone::dim});
+    else {
+        int known=0,fit=0;
+        for(const auto& d:view.dashes)if(avogadro::fresh(d.updated,now,avogadro::dash_ms)) {++known;if(d.clear)++fit;}
+        lines=avogadro::describe(avogadro::with_aim(s,view.aim,now),view.bus,avogadro::fresh(view.bus.updated,now,avogadro::live_ms),known==avogadro::dash_count?fit:-1);
+    }
+    zombies::Marker marker{};nav::Vec3 origin{};ImVec2 head{};bool overhead=false;
+    if(live&&!avogadro_locked&&avogadro_body(s,g,marker,origin)) {
+        const auto to=origin-cam.origin;
+        const auto at=nav::camera_space(cam,origin+nav::Vec3{0,0,92});
+        if(nav::dot(to,to)<=avogadro_range*avogadro_range&&nav::point_visible(cam,at)) {head=screen(nav::project(cam,at),sx,sy);overhead=true;}
+    }
+    // The top panel is read from the corner of the eye: larger than the label (user request 2026-10-30).
+    const float font_size=std::max(11.0f,(overhead?16.0f:21.0f)*scale),pad=(overhead?6.0f:8.0f)*scale,line_height=font_size+3*scale;
+    auto* font=fonts::get(font_size);
+    float plate_width=0;
+    for(const auto& l:lines)plate_width=std::max(plate_width,font->CalcTextSizeA(font_size,10000,0,l.text.c_str()).x);
+    const float plate_height=line_height*static_cast<float>(lines.size());
+    ImVec2 top=overhead?ImVec2(head.x-plate_width*0.5f,head.y-plate_height-pad):ImVec2((width-plate_width)*0.5f,10*scale+pad);
+    top.x=std::clamp(top.x,pad,std::max(pad,width-plate_width-pad));top.y=std::clamp(top.y,pad,std::max(pad,height-plate_height-pad));
+    list->AddRectFilled(ImVec2(top.x-pad,top.y-pad*0.6f),ImVec2(top.x+plate_width+pad,top.y+plate_height+pad*0.4f),IM_COL32(8,12,22,175),5*scale);
+    for(std::size_t i=0;i<lines.size();++i) {
+        const ImVec2 at(top.x,top.y+line_height*static_cast<float>(i));
+        list->AddText(font,font_size,ImVec2(at.x+1,at.y+1),IM_COL32(0,0,0,220),lines[i].text.c_str());
+        list->AddText(font,font_size,at,tone_color(lines[i].tone),lines[i].text.c_str());
+    }
+}
 // world: the in-world drawings (NAV, spawns, triggers, aids, zombie markers); since
 // 2026-10-14 normally drawn by the injection under the weapon and HUD. collision_part:
 // the Present-time collision fallback. Present runs both only when the injection did not.
@@ -1638,11 +1857,12 @@ void draw(ImDrawList* list,float width,float height,FrameInfo& frame,bool world,
                     const auto site_label=spawns::site_label(site.types);
                     if(spawn_labels)under_symbol(p,radius,IM_COL32(230,205,255,255),site_label.c_str());
                     if(site.types&1)list->AddCircleFilled(p,3*symbol_scale,color,16);
-                } else if(site.types&126) {
+                } else if(site.types&254) {
                     const ImVec2 top(p.x,p.y-9*symbol_scale),east(p.x+9*symbol_scale,p.y),bottom(p.x,p.y+9*symbol_scale),west(p.x-9*symbol_scale,p.y);
                     list->AddQuad(top,east,bottom,west,IM_COL32(0,0,0,255),3*symbol_scale);
                     // Lavender identifies a registered special site, not active chooser membership.
-                    list->AddQuadFilled(top,east,bottom,west,IM_COL32(195,145,255,255));
+                    // Avogadro sites are electric blue, apart from TranZit's Denizen sites (2026-10-30).
+                    list->AddQuadFilled(top,east,bottom,west,site.types&128?IM_COL32(90,200,255,255):IM_COL32(195,145,255,255));
                     const auto site_label=spawns::site_label(site.types);
                     if(spawn_labels)under_symbol(p,9*symbol_scale,IM_COL32(230,205,255,255),site_label.c_str());
                     if(site.types&1)list->AddCircleFilled(p,3*symbol_scale,color,16);
@@ -1734,7 +1954,10 @@ void draw(ImDrawList* list,float width,float height,FrameInfo& frame,bool world,
             collision_gpu_failed=!collision_gpu::ready(device);
             // When the injection drew this frame, it already built and drew the collision.
             if(!collision_gpu_failed&&frame_trace::injected_last_frame()) {}
-            else if(!collision_gpu_failed) {collision_drawn=build_collision(cam,*walls,sx,sy,collision_batch);collision_gpu_pass=!collision_batch.fills.empty();}
+            else if(!collision_gpu_failed) {
+                std::vector<collision::Face> moving;if(collision_moving)collision_movers=collision::movers(*walls,cam.origin,collision_range,moving,collision_model_bounds);
+                collision_drawn=build_collision(cam,*walls,moving,sx,sy,collision_batch);collision_gpu_pass=!collision_batch.fills.empty();
+            }
             else collision_drawn=draw_collision(list,cam,*walls,sx,sy);
         }
         // Zombie hitboxes without world collision, when the injection did not run.
@@ -1753,6 +1976,12 @@ void draw(ImDrawList* list,float width,float height,FrameInfo& frame,bool world,
             if(fire_aid)draw_fire(list,cam,staffs,width,height,sx,sy,fire_details);
         }
         if(world&&(mob_skulls||mob_boxes)&&g->map=="maps/mp/zm_prison.d3dbsp")draw_mob(list,cam,mob::snapshot(),height,sx,sy);
+        // TranZit Avogadro aid: route, dashes and markers in the world pass, its text at Present.
+        if((avogadro_aid||avogadro_spawns)&&(world||collision_part)&&g->map=="maps/mp/zm_transit.d3dbsp") {
+            const auto avogadro_view=avogadro::snapshot();
+            if(world)draw_avogadro_world(list,cam,*g,avogadro_view,label_size,sx,sy);
+            if(collision_part&&avogadro_aid)draw_avogadro_text(list,cam,*g,avogadro_view,width,height,sx,sy);
+        }
         const auto z=zombies::snapshot();
         if(world&&zombie_markers&&z&&GetTickCount64()-z->updated<=200&&z->map->map==g->map&&z->map->base==g->base&&z->map->data==g->data) {
             for(const auto& marker:z->markers) {
@@ -1834,6 +2063,7 @@ void render(IDXGISwapChain* candidate) {
     // Next frame, the first game draw onto this backbuffer triggers inject_collision.
     backbuffer_width=desc.Width;backbuffer_height=desc.Height;
     frame_trace::set_injection(visible&&!collision_gpu_failed?&inject_collision:nullptr,buffer);
+    frame_trace::set_model_mask(visible&&world_collision&&collision_in_frame&&!collision_gpu_failed);
     release(buffer);
     if(target&&desc.Width&&desc.Height) {
         ImGui::SetCurrentContext(gui);

@@ -32,6 +32,43 @@ inline nav::Vec3 rotate(nav::Vec3 local,nav::Vec3 degrees) {
 // A constant approximation avoids cached-pose availability and LOD changes.
 // Recompute from the latest verified origin at draw time; retain no history.
 inline nav::Vec3 marker_anchor(nav::Vec3 origin) {return origin+nav::Vec3{0,0,60};}
+// The engine's route for an actor (path_t at actor +0x540; layout from its own consumers,
+// research/docs/next-node-consumer.md): up to 32 points of 0x1C bytes (position, 2D
+// direction, segment length, signed node index or -1 for a synthetic point), the int16
+// length at +0x8C0 and the final goal at +0x8D0. Point 0 is the far end (the goal itself,
+// or the last stored point of a longer route, which is planned further as he walks) and
+// point length-1 the start. Live TranZit check 2026-10-30: 82 node-indexed points on three
+// zombies, every one exactly on its NAV node, and a full 32-point route cut at the far end.
+inline constexpr std::uint32_t route_points=0x540,route_length=0x8C0,route_goal=0x8D0,route_capacity=32,route_stride=0x1C;
+struct Route {std::vector<nav::Vec3> points;nav::Vec3 goal;bool complete=false;};
+// Decodes a copy of the route points into walking order (start first). Rejects the whole
+// route unless every node-indexed point sits on its NAV node and the start is near the
+// actor (it replans as it walks).
+inline bool decode_route(const unsigned char* raw,int length,nav::Vec3 goal,const nav::Graph& g,nav::Vec3 actor,Route& out) {
+    out=Route{};
+    if(length<1||length>static_cast<int>(route_capacity)||!nav::finite(goal))return false;
+    for(int i=length-1;i>=0;--i) {
+        const unsigned char* p=raw+static_cast<std::size_t>(i)*route_stride;
+        const auto point=field<nav::Vec3>(p,0);const auto node=field<std::int32_t>(p,24);
+        if(!nav::finite(point)||std::abs(point.x)>1000000||std::abs(point.y)>1000000||std::abs(point.z)>1000000)return false;
+        if(node< -1||(node>=0&&static_cast<std::size_t>(node)>=g.nodes.size()))return false;
+        if(node>=0) {const auto d=g.nodes[static_cast<std::size_t>(node)].origin-point;if(nav::dot(d,d)>1)return false;}
+        out.points.push_back(point);
+    }
+    const auto start=out.points.front()-actor;
+    if(start.x*start.x+start.y*start.y>768.0f*768.0f)return false;
+    const auto end=out.points.back()-goal;
+    out.goal=goal;out.complete=nav::dot(end,end)<=1;
+    return true;
+}
+// First route point still ahead of the actor: a point is passed once the actor is closer
+// (2D) to the following point than the point itself is.
+inline std::size_t route_ahead(const std::vector<nav::Vec3>& points,nav::Vec3 actor) {
+    auto planar=[](nav::Vec3 a,nav::Vec3 b) {const float x=a.x-b.x,y=a.y-b.y;return x*x+y*y;};
+    std::size_t i=0;
+    while(i+1<points.size()&&planar(actor,points[i+1])<planar(points[i],points[i+1]))++i;
+    return i;
+}
 bool startup();
 void update();
 void clear();
@@ -39,5 +76,8 @@ std::shared_ptr<const Snapshot> snapshot();
 bool still_living(const Marker& marker,nav::Vec3& origin);
 // Live origin plus entity bounds (local mins/maxs) of a still-living marker.
 bool living_bounds(const Marker& marker,nav::Vec3& origin,nav::Vec3& mins,nav::Vec3& maxs);
+// The still-living marker's current route (decode_route), read twice and kept only when
+// both reads agree; origin is its live position.
+bool route(const Marker& marker,const nav::Graph& g,Route& out,nav::Vec3& origin);
 const char* status();
 }
