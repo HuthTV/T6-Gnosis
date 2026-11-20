@@ -5,6 +5,13 @@ rem   build.bat release [version]   release build, version = today's date (YYYY.
 rem                                 unless given  -> dist\T6Gnosis.dll and dist\T6Gnosis-<version>.zip
 rem Needs Visual Studio (Desktop development with C++) and gsc-tool (see generate.ps1).
 setlocal
+
+rem Plugin sources (src\), third-party sources and the unit tests (tests\<name>.cpp).
+set "SOURCES=plugin reader overlay overlay_settings overlay_menu overlay_hud overlay_world overlay_aids movement zombies spawns spawns_native despawn despawn_schedule despawn_overlay staff_aid mob_aid grenade_aid robot_aid avogadro_aid world_collision collision_gpu frame_trace"
+set "MINHOOK=buffer hook trampoline hde/hde32"
+set "IMGUI=imgui imgui_draw imgui_tables imgui_widgets backends/imgui_impl_dx11 backends/imgui_impl_win32"
+set "TESTS=projection_tests zombie_tests spawn_tests spawns_native_tests despawn_tests jump_timing_tests playable_area_tests avogadro_tests grenade_tests robot_tests"
+
 set "T6GNOSIS_VERSION="
 if /i "%~1"=="release" (
     if "%~2"=="" (
@@ -21,6 +28,7 @@ if errorlevel 1 exit /b 1
 pushd "%~dp0"
 if exist build rmdir /s /q build
 mkdir build
+
 rem The compiled GSC helper is embedded in the DLL (src\helper_deploy.hpp includes build\helper_gsc.inc).
 if defined T6GNOSIS_VERSION (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File generate.ps1 -Version %T6GNOSIS_VERSION%
@@ -28,30 +36,50 @@ if defined T6GNOSIS_VERSION (
     powershell.exe -NoProfile -ExecutionPolicy Bypass -File generate.ps1
 )
 if errorlevel 1 goto failed
+
 cd build
-cl /nologo /c /O2 /MT /W3 /DNDEBUG /DWIN32 /D_WINDOWS /I../vendor/minhook-1.3.4/include ../vendor/minhook-1.3.4/src/buffer.c ../vendor/minhook-1.3.4/src/hook.c ../vendor/minhook-1.3.4/src/trampoline.c ../vendor/minhook-1.3.4/src/hde/hde32.c
+set "COMPILE=/nologo /c /O2 /MT /DNDEBUG /DWIN32 /D_WINDOWS"
+set "PLUGIN_FILES="
+set "MINHOOK_FILES="
+set "IMGUI_FILES="
+set "OBJECTS="
+for %%f in (%SOURCES%) do (
+    call set "PLUGIN_FILES=%%PLUGIN_FILES%% ../src/%%f.cpp"
+    call set "OBJECTS=%%OBJECTS%% %%f.obj"
+)
+for %%f in (%MINHOOK%) do (
+    call set "MINHOOK_FILES=%%MINHOOK_FILES%% ../vendor/minhook-1.3.4/src/%%f.c"
+    call set "OBJECTS=%%OBJECTS%% %%~nf.obj"
+)
+for %%f in (%IMGUI%) do (
+    call set "IMGUI_FILES=%%IMGUI_FILES%% ../vendor/imgui-1.91.9b/%%f.cpp"
+    call set "OBJECTS=%%OBJECTS%% %%~nf.obj"
+)
+cl %COMPILE% /W3 /I../vendor/minhook-1.3.4/include %MINHOOK_FILES%
 if errorlevel 1 goto failed
-cl /nologo /c /std:c++17 /EHsc /O2 /MT /W3 /DNDEBUG /DWIN32 /D_WINDOWS /I../vendor/imgui-1.91.9b ../vendor/imgui-1.91.9b/imgui.cpp ../vendor/imgui-1.91.9b/imgui_draw.cpp ../vendor/imgui-1.91.9b/imgui_tables.cpp ../vendor/imgui-1.91.9b/imgui_widgets.cpp ../vendor/imgui-1.91.9b/backends/imgui_impl_dx11.cpp ../vendor/imgui-1.91.9b/backends/imgui_impl_win32.cpp
+cl %COMPILE% /std:c++17 /EHsc /W3 /I../vendor/imgui-1.91.9b %IMGUI_FILES%
 if errorlevel 1 goto failed
-cl /nologo /c /std:c++17 /EHsc /O2 /MT /W4 /WX /DNDEBUG /DWIN32 /D_WINDOWS /DNOMINMAX /I. /I../vendor/plutonium-sdk /I../vendor/imgui-1.91.9b /I../vendor/minhook-1.3.4/include ../src/plugin.cpp ../src/reader.cpp ../src/overlay.cpp ../src/zombies.cpp ../src/spawns.cpp ../src/spawns_native.cpp ../src/practice.cpp ../src/despawn.cpp ../src/despawn_schedule.cpp ../src/despawn_overlay.cpp ../src/staff_aid.cpp ../src/mob_aid.cpp ../src/avogadro_aid.cpp ../src/world_collision.cpp ../src/collision_gpu.cpp ../src/frame_trace.cpp
+cl %COMPILE% /std:c++17 /EHsc /W4 /WX /DNOMINMAX /I. /I../vendor/plutonium-sdk /I../vendor/imgui-1.91.9b /I../vendor/minhook-1.3.4/include %PLUGIN_FILES%
 if errorlevel 1 goto failed
 rc /nologo /i . /fo T6Gnosis.res ../src/T6Gnosis.rc
 if errorlevel 1 goto failed
-rem Relocatable image with ASLR; /Brepro makes identical sources give an identical DLL.
-link /nologo /DLL /MACHINE:X86 /DYNAMICBASE /BASE:0x62000000 /INCREMENTAL:NO /Brepro /OUT:T6Gnosis.dll plugin.obj reader.obj overlay.obj zombies.obj spawns.obj spawns_native.obj practice.obj despawn.obj despawn_schedule.obj despawn_overlay.obj staff_aid.obj mob_aid.obj avogadro_aid.obj world_collision.obj collision_gpu.obj frame_trace.obj imgui.obj imgui_draw.obj imgui_tables.obj imgui_widgets.obj imgui_impl_dx11.obj imgui_impl_win32.obj buffer.obj hook.obj trampoline.obj hde32.obj T6Gnosis.res user32.lib gdi32.lib
+rem Relocatable image with ASLR. /Brepro makes identical sources give an identical DLL.
+link /nologo /DLL /MACHINE:X86 /DYNAMICBASE /BASE:0x62000000 /INCREMENTAL:NO /Brepro /OUT:T6Gnosis.dll %OBJECTS% T6Gnosis.res user32.lib gdi32.lib
 if errorlevel 1 goto failed
-for %%t in (projection_tests zombie_tests spawn_tests spawns_native_tests despawn_tests jump_timing_tests playable_area_tests avogadro_tests) do (
+
+for %%t in (%TESTS%) do (
     cl /nologo /std:c++17 /EHsc /O2 /MT /W4 /WX /DNOMINMAX /I../src ../tests/%%t.cpp /Fe:%%t.exe >nul
     if errorlevel 1 goto failed
-    %%t.exe
+    .\%%t.exe
     if errorlevel 1 goto failed
 )
 cd ..
+
 if defined T6GNOSIS_VERSION (
     if not exist dist mkdir dist
     copy /y build\T6Gnosis.dll dist\T6Gnosis.dll >nul
     if errorlevel 1 goto failed
-    rem The download carries the version in its name; the DLL inside stays T6Gnosis.dll so
+    rem The download carries the version in its name. The DLL inside stays T6Gnosis.dll so
     rem an update replaces the old file instead of loading a second copy.
     powershell.exe -NoProfile -Command "Compress-Archive -Force -Path dist\T6Gnosis.dll,README.md -DestinationPath dist\T6Gnosis-%T6GNOSIS_VERSION%.zip"
     if errorlevel 1 goto failed
@@ -59,6 +87,7 @@ if defined T6GNOSIS_VERSION (
 ) else echo Built T6 Gnosis dev: build\T6Gnosis.dll
 popd
 exit /b 0
+
 :failed
 popd
 exit /b 1

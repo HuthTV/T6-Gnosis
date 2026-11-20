@@ -1,6 +1,6 @@
 // T6 Gnosis GSC helper, solo LAN only. Every Gnosis GSC helper lives in this
-// one script: despawn eligibility, trigger metadata and the Origins, Mob of the
-// Dead and TranZit Avogadro aids. It never replaces cleanup functions or deletes
+// one script: despawn eligibility, trigger metadata and the Origins (staffs, robot
+// footsteps), Mob of the Dead and TranZit Avogadro aids. It never replaces cleanup functions or deletes
 // actors, and it changes nothing in the game: points, weapons and puzzle setup belong
 // to the practice menu (O-Prac), which Gnosis must stay fully compatible with (2026-10-20).
 // Private level/actor telemetry flags prevent duplicate helper/listener threads.
@@ -17,6 +17,12 @@
 #define GNOSIS_FIRE_RADIUS 64
 #define GNOSIS_FIRE_LIT_MS 15000
 #define GNOSIS_FIRE_REARM_MS 2000
+// Origins giant robot footsteps: the three walkers and the 10 s wait of the wind staff
+// clue thread (zm_tomb_vo watch_one_shot_samantha_clue). Route 3 is robot 1's intro walk
+// (robot_walk_animation id 3, zm_robot_walk_intro), a different path from its usual walk.
+#define GNOSIS_ROBOTS 3
+#define GNOSIS_ROBOT_INTRO_ROUTE 3
+#define GNOSIS_ROBOT_CLUE_WAIT_MS 10000
 // Mob of the Dead blue-skull aid: vanilla catch radius and reveal time
 // (zm_prison_sq_bg), the tomahawk check time (_zm_weap_tomahawk 0.5 s wait, seen
 // at 0.55 s), and the throw fitted from the tomahawk probe.
@@ -29,6 +35,22 @@
 #define GNOSIS_MOB_GRAVITY 800
 #define GNOSIS_MOB_MAX_SKULLS 8
 #define GNOSIS_MOB_MAX_BOXES 32
+#define GNOSIS_MOB_MAX_SPAWNS 512
+// Thrown-grenade aid (frag, EMP, G-strike). Kinds shared with src/grenade_aid.hpp
+// (grenade::Kind), path flags with grenade::Flag, flight events with its event list.
+// The G-strike strike pattern and 200-unit kill radius are vanilla (_zm_weap_beacon).
+#define GNOSIS_THROW_FRAG 1
+#define GNOSIS_THROW_EMP 2
+#define GNOSIS_THROW_BEACON 3
+#define GNOSIS_THROW_BOUNCE 1
+#define GNOSIS_THROW_REST 2
+#define GNOSIS_THROW_BURST 4
+#define GNOSIS_THROW_STEP 0.05
+#define GNOSIS_THROW_GRAVITY 800
+#define GNOSIS_THROW_MAX_POINTS 96
+#define GNOSIS_THROW_MAX_BOUNCES 8
+#define GNOSIS_THROW_MAX_FRAMES 200
+#define GNOSIS_THROW_STRIKE_RADIUS 200
 // TranZit Avogadro aid: flag bits shared with src/avogadro_aid.hpp (avogadro::Flag).
 #define GNOSIS_AVO_PAIN 1
 #define GNOSIS_AVO_SHIELD 2
@@ -52,7 +74,7 @@ gnosis_start()
     // The plugin writes this script and leaves it installed after the game closes.
     // Without the plugin it does nothing at all (user decision 2026-10-14). Plugin
     // builtins are resolved when a script loads, so a direct call would stop the map
-    // from loading without the DLL; every plugin call below therefore goes through
+    // from loading without the DLL. Every plugin call below therefore goes through
     // invokebuiltin, which passes listed arguments exactly like a direct call
     // (measured in game, 2026-10-14).
     if ( !builtinfunctionexists( "GnosisPluginLoaded" ) )
@@ -66,9 +88,12 @@ gnosis_start()
     level thread gnosis_loop();
     level thread gnosis_trigger_metadata();
     level thread gnosis_mob_aid();
+    level thread gnosis_mob_afterlife();
     level thread gnosis_wind_aid();
     level thread gnosis_fire_aid();
+    level thread gnosis_robot_aid();
     level thread gnosis_avogadro_aid();
+    level thread gnosis_throw_aid();
 }
 
 gnosis_loop()
@@ -94,7 +119,7 @@ gnosis_loop()
                 if ( isdefined( tracker ) )
                 {
                     // A replacefunc (e.g. an O-Prac segment start) runs another loop in
-                    // its place; follow the replacement. getdetour runs in its own
+                    // its place. Follow the replacement. getdetour runs in its own
                     // thread so an error there cannot stop this loop.
                     if ( builtinfunctionexists( "getdetour" ) && !( isdefined( level.gnosis_detour_query ) && level.gnosis_detour_query ) )
                         level thread gnosis_query_detour( tracker );
@@ -149,7 +174,7 @@ gnosis_loop()
 
 // Asks Plutonium once a second which function replaces the tracker loop.
 // getdetour's contract is undocumented, so the plugin validates the value (F8
-// shows a replaced loop by name; a value equal to the original is ignored). If the call
+// shows a replaced loop by name. A value equal to the original is ignored). If the call
 // errors, only this thread dies and the flag stays set, so no further queries are
 // made and the vanilla binding remains.
 gnosis_query_detour( tracker )
@@ -179,7 +204,7 @@ gnosis_classify( player )
     map = level.script;
     if ( map != "zm_transit" && map != "zm_highrise" && map != "zm_prison" && map != "zm_buried" && map != "zm_tomb" )
         return 0;
-    // Avogadro has its own cleanup; never classify as an ordinary candidate.
+    // Avogadro has its own cleanup. Never classify as an ordinary candidate.
     if ( map == "zm_transit" && isdefined( self.is_avogadro ) && self.is_avogadro )
         return 4;
     if ( !isdefined( level.zombie_tracking_dist ) || level.zombie_tracking_dist <= 0 )
@@ -245,7 +270,7 @@ gnosis_classify( player )
     }
     if ( map == "zm_buried" )
     {
-        // Pure zone-membership/occupancy query; it does not delete or retarget.
+        // Pure zone-membership/occupancy query. It does not delete or retarget.
         zone_query = getfunction( "maps/mp/zm_buried_distance_tracking", "can_be_deleted_from_buried_special_zones" );
         if ( self [[zone_query]]() )
         {
@@ -259,7 +284,7 @@ gnosis_classify( player )
     return 1;
 }
 
-// Copies descriptive fields only; never fires triggers or changes gameplay.
+// Copies descriptive fields only. Never fires triggers or changes gameplay.
 gnosis_trigger_metadata()
 {
     if ( !builtinfunctionexists( "GnosisTriggerField" ) )
@@ -403,8 +428,8 @@ gnosis_wind_publish_smoke( index, smoke, dest )
     invokebuiltin( "GnosisWindSmoke", index, brush getabsmins(), brush getabsmaxs(), vectornormalize( dest - smoke.origin ), solved, gnosis_wind_cooling( index ) );
 }
 
-// Publishes one sample: verdict 0 miss, 1 fails, 2 solves, 3 grazes (uncertain);
-// hit 0 none, 1 direct, 2 splash; the smoke index; the predicted landing point;
+// Publishes one sample: the verdict (0 miss, 1 fails, 2 solves, 3 grazes, uncertain),
+// the hit (0 none, 1 direct, 2 splash), the smoke index, the predicted landing point,
 // then the inputs for the live readout: aim forward, the direction_vec vanilla
 // would judge, cos( script_int ), ms that smoke still ignores hits, and the
 // bullettrace (world) and physicstrace (brush) distances.
@@ -530,6 +555,10 @@ gnosis_wind_ray_box( start, direction, length, lo, hi )
 // along the aim, then (only if a 100-unit bullettrace ahead is clear) two
 // magicbullets 0.2 s and 0.4 s later from muzzle + fwd * 50 toward muzzle +
 // dir * 100, with dir the aim turned -15 then +15 degrees: about -/+29 degrees.
+// _zm_weap_staff_fire fires those side shots for staff_fire_zm and staff_fire_upgraded_zm
+// (an uncharged upgraded shot), so the aim is published whenever either is held, puzzle or
+// not (user request 2026-11-20). The torches are published only while puzzle 2 runs: before
+// it b_correct_torch is unset, after it a torch hit does nothing.
 gnosis_fire_aid()
 {
     if ( !builtinfunctionexists( "GnosisFireTorch" ) || !builtinfunctionexists( "GnosisFireAim" ) )
@@ -538,15 +567,9 @@ gnosis_fire_aid()
         wait 0.05;
     if ( level.script != "zm_tomb" )
         return;
-    // b_correct_torch is assigned when puzzle 2 starts, after puzzle 1.
-    while ( !( isdefined( level.flag ) && isdefined( level.flag["fire_puzzle_1_complete"] ) && level.flag["fire_puzzle_1_complete"] ) )
-        wait 0.5;
-    if ( isdefined( level.flag["fire_puzzle_2_complete"] ) && level.flag["fire_puzzle_2_complete"] )
-        return;
-    level endon( "fire_puzzle_2_complete" );
     torches = gnosis_structs( "script_noteworthy", "church_torch_target" );
-    if ( torches.size == 0 || torches.size > 9 )
-        return;
+    if ( torches.size > 9 )
+        torches = [];
     flames = [];
     lit_at = [];
     while ( true )
@@ -555,7 +578,12 @@ gnosis_fire_aid()
         if ( players.size == 1 )
         {
             now = gettime();
-            for ( i = 0; i < torches.size; i++ )
+            // b_correct_torch is assigned when puzzle 2 starts, after puzzle 1.
+            puzzle = gnosis_flag( "fire_puzzle_1_complete" ) && !gnosis_flag( "fire_puzzle_2_complete" );
+            active = [];
+            if ( puzzle )
+                active = torches;
+            for ( i = 0; i < active.size; i++ )
             {
                 torch = torches[i];
                 lit = 0;
@@ -583,11 +611,17 @@ gnosis_fire_aid()
                     correct = 1;
                 invokebuiltin( "GnosisFireTorch", i, torch.origin, correct, lit, left, rearm );
             }
-            if ( players[0] getcurrentweapon() == "staff_fire_zm" )
-                players[0] gnosis_fire_aim( torches );
+            weapon = players[0] getcurrentweapon();
+            if ( weapon == "staff_fire_zm" || weapon == "staff_fire_upgraded_zm" )
+                players[0] gnosis_fire_aim( active );
         }
         wait 0.05;
     }
+}
+
+gnosis_flag( name )
+{
+    return isdefined( level.flag ) && isdefined( level.flag[name] ) && level.flag[name];
 }
 
 // Publishes the predicted main, left and right explosion points, the torch each
@@ -628,8 +662,177 @@ gnosis_fire_torch_at( torches, point )
     return best;
 }
 
+// Origins giant robot footsteps (zm_tomb_giant_robot). Read-only: field reads and listeners.
+// Each robot's stomp kill triggers ride its feet (linked to TAG_ATTACH_HATCH_LE / _RI, 72 up).
+// On each big footstep notetrack, monitor_footsteps_fx starts rumble_and_shake, which waits
+// 0.2 s and sends sam_clue_giant for each valid player outside a robot head whose distance to
+// that foot's trigger is under 1500. watch_one_shot_samantha_clue (zm_tomb_vo) takes it, waits
+// 10 s and plays the wind staff clue if the player is in zombie blood. Publishes each robot's
+// feet, the player, the helper's copy of the clue's 10 s wait, and every step at its check.
+// Each walk is animscripted from a fixed align struct with fixed animations, so the n-th big
+// step of a route lands on the same spot every walk: steps are numbered per walk and tagged
+// with their route, and the plugin keeps each route's spots to show the steps still ahead.
+gnosis_robot_aid()
+{
+    if ( !builtinfunctionexists( "GnosisRobot" ) || !builtinfunctionexists( "GnosisRobotPlayer" ) || !builtinfunctionexists( "GnosisRobotStep" ) )
+        return;
+    while ( !isdefined( level.script ) )
+        wait 0.05;
+    if ( level.script != "zm_tomb" )
+        return;
+    // giant_robot_initial_spawns adds each robot once its triggers are linked.
+    while ( !isdefined( level.a_giant_robots ) || level.a_giant_robots.size < GNOSIS_ROBOTS )
+        wait 0.5;
+    level.gnosis_robot_clue_until = 0;
+    level thread gnosis_robot_clues();
+    level thread gnosis_robot_intro();
+    for ( i = 0; i < GNOSIS_ROBOTS; i++ )
+    {
+        level.gnosis_robot_walking[i] = 0;
+        level.gnosis_robot_step_next[i] = 0;
+        level.gnosis_robot_step_checked[i] = 0;
+        level thread gnosis_robot_steps( i, "left" );
+        level thread gnosis_robot_steps( i, "right" );
+    }
+    while ( true )
+    {
+        players = getplayers();
+        if ( players.size == 1 )
+        {
+            for ( i = 0; i < GNOSIS_ROBOTS; i++ )
+                gnosis_robot_publish( i );
+            players[0] gnosis_robot_player();
+        }
+        wait 0.05;
+    }
+}
+
+// robot_cycling starts robot 1's intro walk first and waits for this notify before any other walk.
+gnosis_robot_intro()
+{
+    level.gnosis_robot_intro_done = 0;
+    level waittill( "giant_robot_intro_complete" );
+    level.gnosis_robot_intro_done = 1;
+}
+
+gnosis_robot_route( id )
+{
+    if ( id == 1 && !level.gnosis_robot_intro_done )
+        return GNOSIS_ROBOT_INTRO_ROUTE;
+    return id;
+}
+
+// id, route, walking, the left and right trigger origins, the hatch foot (0 left, 1 right, -1
+// none), whether its hatch is open, and how many big steps of this walk have had their check.
+// hatch_foot is picked anew 10 s into each walk, before giant_robot_think sets is_walking, and
+// only for a walk with a hatch. The step count restarts when a walk ends (the next walk starts
+// at least 10 s later).
+gnosis_robot_publish( id )
+{
+    ai = level.a_giant_robots[id];
+    if ( !isdefined( ai ) || !isdefined( ai.trig_stomp_kill_left ) || !isdefined( ai.trig_stomp_kill_right ) )
+        return;
+    walking = 0;
+    if ( isdefined( ai.is_walking ) && ai.is_walking )
+        walking = 1;
+    hatch = -1;
+    if ( walking && isdefined( ai.b_has_hatch ) && ai.b_has_hatch && isdefined( ai.hatch_foot ) )
+    {
+        if ( ai.hatch_foot == "left" )
+            hatch = 0;
+        else if ( ai.hatch_foot == "right" )
+            hatch = 1;
+    }
+    open = 0;
+    if ( hatch >= 0 && isdefined( level.gr_foot_hatch_closed ) && isdefined( level.gr_foot_hatch_closed[id] ) && !level.gr_foot_hatch_closed[id] )
+        open = 1;
+    if ( level.gnosis_robot_walking[id] && !walking )
+    {
+        level.gnosis_robot_step_next[id] = 0;
+        level.gnosis_robot_step_checked[id] = 0;
+    }
+    level.gnosis_robot_walking[id] = walking;
+    invokebuiltin( "GnosisRobot", id, gnosis_robot_route( id ), walking, ai.trig_stomp_kill_left.origin, ai.trig_stomp_kill_right.origin, hatch, open,
+        level.gnosis_robot_step_checked[id] );
+}
+
+// Origin, the robot head the player is in (-1 none), is_player_valid as rumble_and_shake
+// calls it, zombie blood, and the clue state: 0 waiting for a step, 1 in its 10 s wait
+// (ms left), 2 ended (the clue thread ends when every wind piece is found).
+gnosis_robot_player()
+{
+    head = -1;
+    if ( isdefined( self.in_giant_robot_head ) )
+        head = self.in_giant_robot_head;
+    valid = 0;
+    if ( maps\mp\zombies\_zm_utility::is_player_valid( self ) )
+        valid = 1;
+    blood = 0;
+    if ( isdefined( self.zombie_vars ) && isdefined( self.zombie_vars["zombie_powerup_zombie_blood_on"] ) && self.zombie_vars["zombie_powerup_zombie_blood_on"] )
+        blood = 1;
+    clue = 0;
+    left = 0;
+    if ( isdefined( level.flag ) && isdefined( level.flag["elemental_staff_air_all_pieces_found"] ) && level.flag["elemental_staff_air_all_pieces_found"] )
+        clue = 2;
+    else if ( gettime() < level.gnosis_robot_clue_until )
+    {
+        clue = 1;
+        left = level.gnosis_robot_clue_until - gettime();
+    }
+    invokebuiltin( "GnosisRobotPlayer", self.origin, head, valid, blood, clue, left );
+}
+
+// Every sam_clue_giant the game sends. A notify while the clue thread is not in its wait
+// starts a new 10 s wait. Approximate: the thread can also stay busy past the 10 s (Samantha
+// talking, her line playing), which this copy does not follow.
+gnosis_robot_clues()
+{
+    while ( true )
+    {
+        level waittill( "sam_clue_giant", player );
+        level.gnosis_robot_clue_at = gettime();
+        if ( gettime() >= level.gnosis_robot_clue_until )
+            level.gnosis_robot_clue_until = gettime() + GNOSIS_ROBOT_CLUE_WAIT_MS;
+    }
+}
+
+// Each big footstep of one foot, at rumble_and_shake's check: woken by the same notetrack,
+// the same 0.2 s later, then after every other thread of that frame, so a notify the game sent
+// at this check is already recorded. Publishes the step's route and number in this walk (taken
+// at the notetrack, so both feet share one sequence), the trigger and player origins, their
+// distance and whether the game sent the notify.
+gnosis_robot_steps( id, side )
+{
+    ai = level.a_giant_robots[id];
+    trig = ai.trig_stomp_kill_left;
+    foot = 0;
+    if ( side == "right" )
+    {
+        trig = ai.trig_stomp_kill_right;
+        foot = 1;
+    }
+    note = "footstep_" + side + "_large";
+    while ( isdefined( ai ) )
+    {
+        ai waittillmatch( "scripted_walk", note );
+        route = gnosis_robot_route( id );
+        index = level.gnosis_robot_step_next[id];
+        level.gnosis_robot_step_next[id]++;
+        wait 0.2;
+        waittillframeend;
+        level.gnosis_robot_step_checked[id] = index + 1;
+        players = getplayers();
+        if ( players.size != 1 || !isdefined( trig ) )
+            continue;
+        notified = 0;
+        if ( isdefined( level.gnosis_robot_clue_at ) && level.gnosis_robot_clue_at == gettime() )
+            notified = 1;
+        invokebuiltin( "GnosisRobotStep", id, route, index, foot, trig.origin, players[0].origin, distance( players[0].origin, trig.origin ), notified );
+    }
+}
+
 // Mob of the Dead blue-skull aid (2026-10-14). Publishes the Blundergat quest skulls,
-// a predicted tomahawk throw, the real flight and the Afterlife shock boxes; the
+// a predicted tomahawk throw, the real flight and the Afterlife shock boxes. The
 // plugin draws them. Vanilla (zm_prison_sq_bg, _zm_weap_tomahawk): a skull is caught
 // when the tomahawk's position at its single check is within 100 units of the skull
 // origin, whether or not the skull is shown. The check happens at the first impact or
@@ -694,7 +897,7 @@ gnosis_mob_skulls()
     }
 }
 
-// Mirrors sq_bg_macguffin_think's condition; only records the time.
+// Mirrors sq_bg_macguffin_think's condition. Only records the time.
 gnosis_mob_skull_shots()
 {
     self endon( "death" );
@@ -809,7 +1012,7 @@ gnosis_mob_flight_event( grenade, event, state )
 }
 
 // Shock boxes, once a second. Afterlife props (afterlife_interact) need the player
-// within 256 units in 3D; the afterlife-door boxes (zm_prison alcatraz_afterlife_doors)
+// within 256 units in 3D. The afterlife-door boxes (zm_prison alcatraz_afterlife_doors)
 // use distance2d. Door boxes are found through door -> struct -> box once.
 gnosis_mob_boxes()
 {
@@ -836,7 +1039,7 @@ gnosis_mob_boxes()
         box = getent( structs[0].target, "targetname" );
         if ( !isdefined( box ) )
             continue;
-        // A door box can also be an afterlife_interact prop; list it once, with the
+        // A door box can also be an afterlife_interact prop. List it once, with the
         // door's 2D rule (user screenshot 2026-10-14: a cylinder and a sphere on one box).
         listed = 0;
         for ( i = 0; i < boxes.size; i++ )
@@ -864,9 +1067,157 @@ gnosis_mob_boxes()
     }
 }
 
+// Mob of the Dead Afterlife ghost spawns (2026-10-31). Publishes every spawn struct
+// (player_respawn_point -> target group) with its lock state, and where a ghost would
+// spawn if the player went down now. Vanilla afterlife_get_spawnpoint order: (1) the
+// zone rule, check_for_valid_spawn_in_zone, which is pure and called as is, and (2)
+// check_for_valid_spawn_near_position, whose get_valid_spawn_location picks a random
+// free struct of the group and then keeps it for good in struct.plyr (the lock), so
+// later deaths reuse it until a telefrag clears it. (2) is mirrored here read-only:
+// nothing is assigned and no script randomness is used (the pick is only "one of the
+// free spots"). Kinds sent: 0 unknown or no teleport yet, 1 zone rule, 2 locked,
+// 3 random pick within a group. Spot state bits: 1 locked to the player, 2 taken by
+// another player, 4 a body would be telefragged there.
+gnosis_mob_afterlife()
+{
+    if ( !builtinfunctionexists( "GnosisMobSpawn" ) || !builtinfunctionexists( "GnosisMobSpawnNext" ) || !builtinfunctionexists( "getfunction" ) )
+        return;
+    while ( !isdefined( level.script ) )
+        wait 0.05;
+    if ( level.script != "zm_prison" )
+        return;
+    players = getplayers();
+    while ( players.size != 1 )
+    {
+        wait 0.5;
+        players = getplayers();
+    }
+    player = players[0];
+    while ( !( isdefined( level.struct_class_names ) && isdefined( level.flag ) && isdefined( level.flag["initial_blackscreen_passed"] ) && level.flag["initial_blackscreen_passed"] ) )
+        wait 0.5;
+    groups = [[ getfunction( "maps/mp/gametypes_zm/_zm_gametype", "get_player_spawns_for_gametype" ) ]]();
+    zone_pick = getfunction( "maps/mp/zombies/_zm_afterlife", "check_for_valid_spawn_in_zone" );
+    spots = [];
+    spot_group = [];
+    for ( g = 0; g < groups.size; g++ )
+    {
+        if ( !isdefined( groups[g].target ) )
+            continue;
+        foreach ( spot in gnosis_structs( "targetname", groups[g].target ) )
+        {
+            if ( spots.size >= GNOSIS_MOB_MAX_SPAWNS )
+                break;
+            spots[spots.size] = spot;
+            spot_group[spot_group.size] = g;
+        }
+    }
+    tick = 0;
+    while ( isdefined( player ) )
+    {
+        me = player getentitynumber();
+        // A quarter of the spots per tick, so each is refreshed once a second.
+        {
+            for ( i = tick % 4; i < spots.size; i += 4 )
+            {
+                state = 0;
+                if ( isdefined( spots[i].plyr ) )
+                {
+                    if ( spots[i].plyr == me )
+                        state = 1;
+                    else
+                        state = 2;
+                }
+                if ( positionwouldtelefrag( spots[i].origin ) )
+                    state = state + 4;
+                invokebuiltin( "GnosisMobSpawn", i, spots[i].origin, spot_group[i], state );
+            }
+        }
+        kind = 0;
+        index = -1;
+        group = -1;
+        started = isdefined( level.flag["afterlife_start_over"] ) && level.flag["afterlife_start_over"];
+        if ( started && !( isdefined( player.afterlife ) && player.afterlife ) )
+        {
+            pick = [[ zone_pick ]]( player );
+            if ( isdefined( pick ) )
+            {
+                kind = 1;
+                index = gnosis_mob_spot_index( spots, pick );
+            }
+            else
+            {
+                group = gnosis_mob_spawn_group( groups, player.origin );
+                if ( isdefined( group ) )
+                {
+                    kind = 3;
+                    for ( i = 0; i < spots.size; i++ )
+                    {
+                        if ( spot_group[i] == group && isdefined( spots[i].plyr ) && spots[i].plyr == me && !positionwouldtelefrag( spots[i].origin ) )
+                        {
+                            kind = 2;
+                            index = i;
+                        }
+                    }
+                }
+                else
+                    group = -1;
+            }
+        }
+        invokebuiltin( "GnosisMobSpawnNext", kind, index, group );
+        tick++;
+        wait 0.25;
+    }
+}
+
+gnosis_mob_spot_index( spots, pick )
+{
+    for ( i = 0; i < spots.size; i++ )
+    {
+        if ( distancesquared( spots[i].origin, pick.origin ) < 1 )
+            return i;
+    }
+    return -1;
+}
+
+// check_for_valid_spawn_near_position's group choice, loop for loop (including the
+// backup group taking over inside the loop).
+gnosis_mob_spawn_group( groups, position )
+{
+    closest_group = undefined;
+    closest_distance = 100000000;
+    backup_group = undefined;
+    backup_distance = 100000000;
+    for ( i = 0; i < groups.size; i++ )
+    {
+        ideal_distance = 1000;
+        if ( isdefined( groups[i].script_int ) )
+            ideal_distance = groups[i].script_int;
+        if ( isdefined( groups[i].locked ) && groups[i].locked == 0 )
+        {
+            dist = distancesquared( position, groups[i].origin );
+            if ( dist < ideal_distance * ideal_distance )
+            {
+                if ( dist < closest_distance )
+                {
+                    closest_distance = dist;
+                    closest_group = i;
+                }
+            }
+            else if ( dist < backup_distance )
+            {
+                backup_group = i;
+                backup_distance = dist;
+            }
+        }
+        if ( !isdefined( closest_group ) )
+            closest_group = backup_group;
+    }
+    return closest_group;
+}
+
 // TranZit Avogadro aid (2026-10-30). Mirrors vanilla _zm_ai_avogadro's think loop with
 // field reads and the same queries it makes (getanimfromasd, getmovedelta,
-// maymovefrompointtopoint, bullettracepassed); the plugin draws the result. Nothing here
+// maymovefrompointtopoint, bullettracepassed). The plugin draws the result. Nothing here
 // may use script randomness: vanilla rolls storm regions, dashes and return rounds with
 // randomint, so a helper roll (array_randomize included) would shift them.
 gnosis_avogadro_aid()
@@ -967,7 +1318,7 @@ gnosis_avogadro_publish( player )
             timer = self.region_timer - now;
     }
     // check_range_attack with every condition evaluated, so the plugin can show which
-    // fails; while he waits to be seen, player_look's facing test instead.
+    // fails. While he waits to be seen, player_look's facing test instead.
     target = enemy;
     if ( !isdefined( target ) && state == 2 )
         target = player;
@@ -1088,7 +1439,7 @@ gnosis_avogadro_region_occupied( region )
     return 0;
 }
 
-// Bus states: chasing_bus runs to the nearest bus opening (chase_bus_entry); the attack
+// Bus states: chasing_bus runs to the nearest bus opening (chase_bus_entry). The attack
 // stops the bus after 20 s of draining and shocks riders every 2 s (bus_disable,
 // attach_update).
 gnosis_avogadro_bus( state )
@@ -1109,7 +1460,7 @@ gnosis_avogadro_bus( state )
     invokebuiltin( "GnosisAvogadroBus", level.the_bus gettagorigin( tag ), attack_ms, shock_ms );
 }
 
-// The 12 dashes check_phase picks from (level.avogadro_phase: forward, left, right, back;
+// The 12 dashes check_phase picks from (level.avogadro_phase: forward, left, right, back,
 // substates 0-2), with vanilla's end point (getanimendpos is localtoworldcoords of
 // getmovedelta( anim, 0, 1 )) and its test: a dash is taken only when
 // maymovefrompointtopoint clears it.
@@ -1176,4 +1527,331 @@ gnosis_avogadro_spawns()
             index++;
         }
     }
+}
+
+// Thrown-grenade aid (2026-11-03): frag, EMP and the Origins G-strike. 20 times a second
+// the predicted path is published: of the grenade held back, else of every throwable carried
+// (the plugin draws one of them, by its lethal or tactical priority option). The arc runs in
+// 0.05 s steps (the server frame the engine moves missiles in), bounced at each bullettrace
+// hit, until it rests or its fuse ends. Every real throw is published too, from the engine's
+// own notifies: positions each frame, grenade_bounce, stationary and explode.
+gnosis_throw_aid()
+{
+    while ( !isdefined( level.script ) )
+        wait 0.05;
+    players = getplayers();
+    while ( players.size != 1 )
+    {
+        wait 0.5;
+        players = getplayers();
+    }
+    player = players[0];
+    player endon( "disconnect" );
+    level.gnosis_throw_seq = 0;
+    gnosis_throw_models();
+    level thread gnosis_throw_world();
+    player thread gnosis_throw_pullbacks();
+    player thread gnosis_throw_flights();
+    while ( true )
+    {
+        player gnosis_throw_aim();
+        wait 0.05;
+    }
+}
+
+gnosis_throw_aim()
+{
+    // Down (vanilla player_is_in_laststand) or spectating: nothing to throw.
+    if ( isdefined( self.revivetrigger ) || self.sessionstate != "playing" )
+    {
+        self.gnosis_throw_pulled = undefined;
+        return;
+    }
+    if ( isdefined( self.gnosis_throw_pulled ) && gettime() - self.gnosis_throw_pulled_at > 30000 )
+        self.gnosis_throw_pulled = undefined;
+    if ( isdefined( self.gnosis_throw_pulled ) )
+    {
+        self gnosis_throw_predict( self.gnosis_throw_pulled, ( gettime() - self.gnosis_throw_pulled_at ) / 1000, 1 );
+        return;
+    }
+    carried = [];
+    if ( isdefined( self.current_lethal_grenade ) )
+        carried[carried.size] = self.current_lethal_grenade;
+    if ( isdefined( self.current_tactical_grenade ) )
+        carried[carried.size] = self.current_tactical_grenade;
+    foreach ( weapon in carried )
+    {
+        kind = gnosis_throw_kind( weapon );
+        if ( kind && self getweaponammoclip( weapon ) > 0 )
+            self gnosis_throw_predict( kind, 0, 0 );
+    }
+}
+
+// Held back from grenade_pullback until grenade_fire (gnosis_throw_flights), going down, or 30 s.
+// Not isthrowinggrenade(): with it the frag path showed only for a moment in game (2026-11-03).
+gnosis_throw_pullbacks()
+{
+    self endon( "disconnect" );
+    while ( true )
+    {
+        self waittill( "grenade_pullback", weapon );
+        kind = gnosis_throw_kind( weapon );
+        if ( !kind )
+            continue;
+        self.gnosis_throw_pulled = kind;
+        self.gnosis_throw_pulled_at = gettime();
+    }
+}
+
+gnosis_throw_kind( weapon )
+{
+    if ( !isdefined( weapon ) || !isstring( weapon ) )
+        return 0;
+    if ( weapon == "frag_grenade_zm" )
+        return GNOSIS_THROW_FRAG;
+    if ( weapon == "emp_grenade_zm" )
+        return GNOSIS_THROW_EMP;
+    if ( weapon == "beacon_zm" )
+        return GNOSIS_THROW_BEACON;
+    return 0;
+}
+
+// Throw model per kind. NOT fitted for these grenades yet: the launch is the tomahawk's
+// measured throw (930 units/s along the view pitched 7.1 degrees up, from the eye plus 7
+// along the view, plus the player's horizontal velocity) and the rest are placeholders,
+// until research/tools/gnosis_throw_probe.gsc has measured them. fuse: seconds from the
+// throw (from the pullback when cook is set), -1 when the path simply runs to rest.
+// across/along: share of the velocity kept across and along the surface at a bounce.
+// stop: speed below which a grenade rests after a floor bounce. stick: rests at the first hit.
+gnosis_throw_models()
+{
+    level.gnosis_throw_models = [];
+    for ( kind = GNOSIS_THROW_FRAG; kind <= GNOSIS_THROW_BEACON; kind++ )
+    {
+        model = spawnstruct();
+        model.speed = 930;
+        model.pitch = 7.1;
+        model.forward = 7;
+        model.fuse = -1;
+        model.cook = 0;
+        model.across = 0.3;
+        model.along = 0.6;
+        model.stop = 60;
+        model.stick = 0;
+        level.gnosis_throw_models[kind] = model;
+    }
+    level.gnosis_throw_models[GNOSIS_THROW_FRAG].fuse = 3;
+    level.gnosis_throw_models[GNOSIS_THROW_FRAG].cook = 1;
+}
+
+// Once a second: the EMP radii (vanilla zombie_vars, read live) and the player volumes the
+// G-strike zone check looks at.
+gnosis_throw_world()
+{
+    while ( true )
+    {
+        if ( isdefined( level.zombie_vars ) && isdefined( level.zombie_vars["emp_perk_off_range"] ) && isdefined( level.zombie_vars["emp_stun_range"] ) )
+            invokebuiltin( "GnosisThrowRadii", GNOSIS_THROW_EMP, level.zombie_vars["emp_perk_off_range"], level.zombie_vars["emp_stun_range"] );
+        level.gnosis_throw_volumes = getentarray( "player_volume", "script_noteworthy" );
+        wait 1;
+    }
+}
+
+gnosis_throw_predict( kind, held, pulled )
+{
+    model = level.gnosis_throw_models[kind];
+    angles = self getplayerangles();
+    start = self geteye() + anglestoforward( angles ) * model.forward;
+    velocity = self getvelocity();
+    v = anglestoforward( ( angles[0] - model.pitch, angles[1], 0 ) ) * model.speed + ( velocity[0], velocity[1], 0 );
+    fuse = model.fuse;
+    if ( fuse > 0 && model.cook )
+        fuse = max( fuse - held, 0 );
+    level.gnosis_throw_seq++;
+    if ( level.gnosis_throw_seq > 1000000000 )
+        level.gnosis_throw_seq = 1;
+    seq = level.gnosis_throw_seq;
+    // No wait inside the publication: Begin, points, strikes and End form one transaction.
+    invokebuiltin( "GnosisThrowBegin", kind, seq, pulled );
+    invokebuiltin( "GnosisThrowPoint", seq, start, 0 );
+    p = start;
+    t = 0;
+    bounces = 0;
+    for ( n = 1; n < GNOSIS_THROW_MAX_POINTS; n++ )
+    {
+        if ( fuse >= 0 && t >= fuse - 0.001 )
+        {
+            invokebuiltin( "GnosisThrowPoint", seq, p, GNOSIS_THROW_BURST );
+            break;
+        }
+        dt = GNOSIS_THROW_STEP;
+        if ( fuse >= 0 && t + dt > fuse )
+            dt = fuse - t;
+        q = p + v * dt + ( 0, 0, -0.5 * GNOSIS_THROW_GRAVITY * dt * dt );
+        trace = bullettrace( p, q, 0, self );
+        if ( !isdefined( trace ) || trace["fraction"] >= 1 )
+        {
+            p = q;
+            v = v + ( 0, 0, -1 * GNOSIS_THROW_GRAVITY * dt );
+            t = t + dt;
+            invokebuiltin( "GnosisThrowPoint", seq, p, 0 );
+            continue;
+        }
+        t = t + dt * trace["fraction"];
+        v = v + ( 0, 0, -1 * GNOSIS_THROW_GRAVITY * dt * trace["fraction"] );
+        normal = trace["normal"];
+        p = trace["position"];
+        into = vectordot( v, normal );
+        if ( into < 0 )
+        {
+            across = normal * into;
+            v = ( v - across ) * model.along - across * model.across;
+        }
+        bounces++;
+        if ( model.stick || bounces >= GNOSIS_THROW_MAX_BOUNCES || normal[2] > 0.7 && length( v ) < model.stop )
+        {
+            invokebuiltin( "GnosisThrowPoint", seq, p, GNOSIS_THROW_REST );
+            break;
+        }
+        invokebuiltin( "GnosisThrowPoint", seq, p, GNOSIS_THROW_BOUNCE );
+        // Off the surface, so the next step does not start inside it.
+        p = p + normal * 0.5;
+    }
+    left = -1;
+    if ( fuse >= 0 )
+        left = max( fuse - t, 0 );
+    valid = 1;
+    if ( kind == GNOSIS_THROW_BEACON )
+    {
+        strikes = gnosis_throw_strikes( p );
+        for ( i = 0; i < strikes.size; i++ )
+            invokebuiltin( "GnosisThrowStrike", seq, i, strikes[i] );
+        valid = gnosis_throw_zone_ok( p );
+    }
+    invokebuiltin( "GnosisThrowEnd", seq, left, valid );
+}
+
+// Where each G-strike shell lands, as vanilla artillery_barrage_logic computes it: a trace
+// from the shell's start (8500 up, offset 6500 sideways for the corner shells) lowered by
+// 5000 to its landing offset. A roof or wall in between takes the shell.
+gnosis_throw_strikes( origin )
+{
+    lands = [];
+    lands[0] = ( 0, 0, 0 );
+    lands[1] = ( -72, 72, 0 );
+    lands[2] = ( 72, 72, 0 );
+    lands[3] = ( 72, -72, 0 );
+    lands[4] = ( -72, -72, 0 );
+    starts = [];
+    starts[0] = ( 0, 0, 8500 );
+    starts[1] = ( -6500, 6500, 8500 );
+    starts[2] = ( 6500, 6500, 8500 );
+    starts[3] = ( 6500, -6500, 8500 );
+    starts[4] = ( -6500, -6500, 8500 );
+    points = [];
+    for ( i = 0; i < lands.size; i++ )
+    {
+        trace = bullettrace( origin + starts[i] - ( 0, 0, 5000 ), origin + lands[i], 0, undefined );
+        points[i] = origin + lands[i];
+        if ( isdefined( trace ) )
+            points[i] = trace["position"];
+    }
+    return points;
+}
+
+// Approximates vanilla check_point_in_enabled_zone, which spawns a script_origin 40 units up
+// and tests istouching (an observer must not spawn entities): the point 40 up inside the
+// absolute bounds of an enabled zone's player volume. Bounds can be larger than a rotated
+// volume, so a spot at a zone's edge can read valid and still be a dud.
+gnosis_throw_zone_ok( origin )
+{
+    if ( !isdefined( level.zones ) || !isdefined( level.gnosis_throw_volumes ) )
+        return 1;
+    point = origin + ( 0, 0, 40 );
+    foreach ( volume in level.gnosis_throw_volumes )
+    {
+        if ( !isdefined( volume ) || !isdefined( volume.targetname ) || !isdefined( level.zones[volume.targetname] ) )
+            continue;
+        zone = level.zones[volume.targetname];
+        if ( !( isdefined( zone.is_enabled ) && zone.is_enabled ) )
+            continue;
+        lo = volume getabsmins();
+        hi = volume getabsmaxs();
+        if ( point[0] >= lo[0] && point[0] <= hi[0] && point[1] >= lo[1] && point[1] <= hi[1] && point[2] >= lo[2] && point[2] <= hi[2] )
+            return 1;
+    }
+    return 0;
+}
+
+// The real flight of every throw. Events (grenade::Event): 0 position, 1 bounce, 2 at rest,
+// 3 exploded, 4 still there, 5 G-strike accepted, 6 G-strike dud (the game's own verdict:
+// player_throw_beacon sets attract_to_origin only for a beacon in an enabled zone).
+gnosis_throw_flights()
+{
+    self endon( "disconnect" );
+    throws = 0;
+    while ( true )
+    {
+        self waittill( "grenade_fire", grenade, weapon );
+        self.gnosis_throw_pulled = undefined;
+        kind = gnosis_throw_kind( weapon );
+        if ( !kind || !isdefined( grenade ) )
+            continue;
+        throws++;
+        state = spawnstruct();
+        state.id = throws;
+        state.kind = kind;
+        level thread gnosis_throw_track( grenade, state );
+        level thread gnosis_throw_bounces( grenade, state );
+        level thread gnosis_throw_rest( grenade, state );
+        level thread gnosis_throw_explode( grenade, state );
+    }
+}
+
+gnosis_throw_track( grenade, state )
+{
+    for ( frame = 0; frame < GNOSIS_THROW_MAX_FRAMES && isdefined( grenade ) && !isdefined( state.done ); frame++ )
+    {
+        event = 0;
+        if ( isdefined( state.rest ) )
+            event = 4;
+        invokebuiltin( "GnosisThrowFlight", state.id, state.kind, grenade.origin, event );
+        wait 0.05;
+    }
+}
+
+gnosis_throw_bounces( grenade, state )
+{
+    grenade endon( "death" );
+    while ( !isdefined( state.done ) )
+    {
+        grenade waittill( "grenade_bounce", position );
+        invokebuiltin( "GnosisThrowFlight", state.id, state.kind, position, 1 );
+    }
+}
+
+gnosis_throw_rest( grenade, state )
+{
+    grenade waittill( "stationary" );
+    state.rest = 1;
+    origin = grenade.origin;
+    invokebuiltin( "GnosisThrowFlight", state.id, state.kind, origin, 2 );
+    if ( state.kind != GNOSIS_THROW_BEACON )
+        return;
+    strikes = gnosis_throw_strikes( origin );
+    for ( i = 0; i < strikes.size; i++ )
+        invokebuiltin( "GnosisThrowFlightStrike", state.id, i, strikes[i] );
+    // Vanilla decides in the frame the beacon comes to rest.
+    wait 0.1;
+    event = 6;
+    if ( isdefined( grenade ) && isdefined( grenade.attract_to_origin ) && grenade.attract_to_origin )
+        event = 5;
+    invokebuiltin( "GnosisThrowFlight", state.id, state.kind, origin, event );
+}
+
+gnosis_throw_explode( grenade, state )
+{
+    grenade waittill( "explode", position );
+    state.done = 1;
+    invokebuiltin( "GnosisThrowFlight", state.id, state.kind, position, 3 );
 }

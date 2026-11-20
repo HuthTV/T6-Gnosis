@@ -33,8 +33,9 @@ To uninstall, delete `T6Gnosis.dll`, `T6Gnosis.cfg` and the helper script.
 | Player collision | World collision surfaces (floors, walls, roofs, invisible clips) with models (zombies, props, the weapon) shown over them; the player bounding box, zombie collision boxes. |
 | Triggers | Trigger volumes and the playable area. |
 | NAV | The zombie navigation graph: nodes, links, traversals. |
-| Origins | Wind and fire puzzle 2 aids: hitboxes and where the held staff's shot lands. |
+| Origins | Wind and fire puzzle 2 aids: hitboxes and where the held staff's shot lands. Giant robot footsteps: for the wind staff robot, the 1500-unit radius around every step still ahead on its route inside which that step sends Samantha's wind staff clue (steps that cannot reach walkable ground left out), a red shockwave at each impact, whether each step sent the clue, and the clue's 10 s wait. |
 | Mob of the Dead | Blue skull aid: each skull's tomahawk catch zone and the predicted tomahawk check point. Afterlife shock boxes and their activation range. |
+| Grenade throws | Frag, EMP and G-strike: the predicted path whenever you carry one, the one held back first, else lethal or tactical by choice (bounces, where it rests or bursts, EMP radii, where the five G-strike shells land and whether it would be a dud), and the real path of the last throw. The prediction is not yet calibrated for these grenades. |
 | TranZit | Avogadro aid: his state, hits, shield and next move above his head; the phase dashes he can pick, the bolt wedge and his planned route; where he can land from the storm. |
 
 World overlays are drawn under the game's HUD; your weapon and zombies cover them.

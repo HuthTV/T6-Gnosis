@@ -1,0 +1,33 @@
+# Code style for src/ and tests/ (vendor/ is excluded in .clang-format-ignore). Matches the
+# Plutonium SDK's .editorconfig and the T6-EE-Timer plugin: Allman braces, 4-space indent,
+# indented namespaces, spaces around operators. Format with
+#   clang-format -i src/*.cpp src/*.hpp tests/*.cpp
+# (VS Code's C++ extension ships clang-format under LLVM\bin.)
+BasedOnStyle: Microsoft
+Standard: Latest
+ColumnLimit: 140
+IndentWidth: 4
+NamespaceIndentation: All
+FixNamespaceComments: true
+PointerAlignment: Left
+SortIncludes: Never
+IncludeBlocks: Preserve
+ReflowComments: false
+BreakStringLiterals: false
+AllowShortFunctionsOnASingleLine: All
+AllowShortLambdasOnASingleLine: All
+AllowShortIfStatementsOnASingleLine: WithoutElse
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortEnumsOnASingleLine: true
+IndentCaseLabels: false
+AlwaysBreakTemplateDeclarations: MultiLine
+SpaceAfterTemplateKeyword: false
+SeparateDefinitionBlocks: Always
+MaxEmptyLinesToKeep: 1
+KeepEmptyLines:
+  AtStartOfBlock: false
+  AtStartOfFile: false
+PenaltyReturnTypeOnItsOwnLine: 1000
+AttributeMacros: [PLUTONIUM_CALLBACK, PLUTONIUM_API, IMGUI_IMPL_API]

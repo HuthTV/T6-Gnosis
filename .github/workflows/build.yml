@@ -1,6 +1,6 @@
 # Builds T6 Gnosis on every push and pull request (clean build plus unit tests). A tag
 # "vYYYY.MM.DD" makes a release build with that version and publishes a GitHub Release
-# whose notes link to this run; the files carry a build provenance attestation, so
+# whose notes link to this run. The files carry a build provenance attestation, so
 # anyone can check that a download came from this repository and run
 # (gh attestation verify <file> --repo <owner>/T6-Gnosis).
 name: Build

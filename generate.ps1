@@ -1,6 +1,6 @@
 # Generates the build inputs that build.bat compiles into the DLL:
 #   build\helper_gsc.inc  the compiled GSC helper (scripts\t6gnosis_helper.gsc) as a
-#                         byte list; the DLL writes it to Plutonium's scripts\zm at startup.
+#                         byte list. The DLL writes it to Plutonium's scripts\zm at startup.
 #   build\version.inc     the version (GNOSIS_VERSION, "dev" unless -Version is given)
 #                         and its numbers for the DLL's version resource.
 # The GSC compiler is xensik's gsc-tool: -GscTool, else %GSC_TOOL%, else
